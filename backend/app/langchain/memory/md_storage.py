@@ -6,6 +6,8 @@ import os
 import aiofiles
 import json
 
+from app.config import settings
+
 
 class MemoryEntry(BaseModel):
     id: str
@@ -19,8 +21,8 @@ class MemoryEntry(BaseModel):
 
 
 class MDStorage:
-    def __init__(self, storage_path: str = "./data/memories"):
-        self.storage_path = Path(storage_path)
+    def __init__(self, storage_path: str = None):
+        self.storage_path = Path(storage_path or settings.AGENT_MEMORY_PATH)
         self.index_path = self.storage_path / "index.json"
         self._ensure_directories()
     

@@ -14,10 +14,9 @@ from app.knowledge_base.services.document import DocumentService
 from app.knowledge_base.services.knowledge_base import KnowledgeBaseService
 from app.knowledge_base.services.search import SearchService
 from app.knowledge_base.services.permission import PermissionService
+from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-BM25_PERSIST_PATH = os.environ.get("BM25_PERSIST_PATH", "data/bm25_indexes")
 
 
 class ServiceContainer:

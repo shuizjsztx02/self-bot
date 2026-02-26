@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,8 +79,8 @@ class VectorStoreBackend(ABC):
 
 class ChromaBackend(VectorStoreBackend):
     
-    def __init__(self, persist_directory: str = "./data/chroma"):
-        self.persist_directory = persist_directory
+    def __init__(self, persist_directory: str = None):
+        self.persist_directory = persist_directory or settings.KB_VECTOR_PATH
         self._client = None
         self._collections: Dict = {}
     

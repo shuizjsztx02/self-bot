@@ -10,10 +10,9 @@ env/
 .env
 
 # data
-data/
 backend/data/
-docs/
-workspace/
+backend/docs/
+backend/workspace/
 
 # Node
 node_modules/
@@ -43,3 +42,8 @@ logs/
 # Build
 build/
 *.egg-info/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/

@@ -116,6 +116,8 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     
     async def generate():
         try:
+            yield f"data: {json.dumps({'type': 'conversation_id', 'id': conversation.id}, ensure_ascii=False)}\n\n"
+            
             async for chunk in agent.chat_stream(request.message, db=db):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         except Exception as e:
@@ -138,7 +140,19 @@ async def list_conversations(
         .limit(limit)
     )
     conversations = result.scalars().all()
-    return {"conversations": conversations}
+    return [
+        {
+            "id": conv.id,
+            "title": conv.title,
+            "provider": conv.provider,
+            "model": conv.model,
+            "system_prompt": conv.system_prompt,
+            "created_at": conv.created_at.isoformat() if conv.created_at else None,
+            "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+            "messages": [],
+        }
+        for conv in conversations
+    ]
 
 
 @router.get("/conversations/{conversation_id}")
@@ -161,13 +175,30 @@ async def get_conversation(
     )
     messages = messages_result.scalars().all()
     
-    return {
-        "conversation": conversation,
-        "messages": messages,
+    conversation_dict = {
+        "id": conversation.id,
+        "title": conversation.title,
+        "provider": conversation.provider,
+        "model": conversation.model,
+        "system_prompt": conversation.system_prompt,
+        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
+        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "messages": [
+            {
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "tool_calls": msg.tool_calls,
+                "created_at": msg.created_at.isoformat() if msg.created_at else None,
+            }
+            for msg in messages
+        ],
     }
+    
+    return conversation_dict
 
 
-@router.post("/conversations", response_model=ChatResponse)
+@router.post("/conversations")
 async def create_conversation(
     request: ConversationCreate,
     db: AsyncSession = Depends(get_db),
@@ -183,10 +214,16 @@ async def create_conversation(
     await db.commit()
     await db.refresh(conversation)
     
-    return ChatResponse(
-        conversation_id=conversation.id,
-        response="Conversation created",
-    )
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "provider": conversation.provider,
+        "model": conversation.model,
+        "system_prompt": conversation.system_prompt,
+        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
+        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "messages": [],
+    }
 
 
 @router.patch("/conversations/{conversation_id}")

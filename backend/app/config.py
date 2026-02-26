@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
     DEBUG: bool = True
     
-    DATABASE_URL: str = "sqlite+aiosqlite:///./data/selfbot.db"
+    DATABASE_URL: str = "sqlite+aiosqlite:///./data/database/selfbot.db"
     
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
@@ -50,8 +50,17 @@ class Settings(BaseSettings):
     
     WORKSPACE_PATH: str = "./workspace"
     
-    MEMORY_STORAGE_PATH: str = "./data/memories"
-    MEMORY_CHROMA_PATH: str = "./data/chroma"
+    # 知识库存储路径
+    KB_DOCUMENT_PATH: str = "./data/knowledge_base/documents"
+    KB_VECTOR_PATH: str = "./data/knowledge_base/vectors"
+    KB_INDEX_PATH: str = "./data/knowledge_base/indexes"
+    
+    # Agent存储路径
+    AGENT_MEMORY_PATH: str = "./data/agent/memories"
+    AGENT_VECTOR_PATH: str = "./data/agent/vectors"
+    AGENT_TRACE_PATH: str = "./data/agent/traces"
+    
+    # Agent记忆配置
     MEMORY_MAX_TOKENS: int = 10000
     MEMORY_SUMMARY_THRESHOLD: float = 0.8
     MEMORY_KEEP_RECENT: int = 5

@@ -148,11 +148,19 @@ class KnowledgeBaseService:
         )
         by_file_type = {row[0]: row[1] for row in file_type_result.all()}
         
+        status_result = await self.db.execute(
+            select(Document.status, func.count(Document.id))
+            .where(Document.kb_id == kb_id)
+            .group_by(Document.status)
+        )
+        by_status = {row[0]: row[1] for row in status_result.all()}
+        
         return {
             "total_documents": doc_count,
             "total_chunks": chunk_count,
             "total_tokens": token_count,
             "by_file_type": by_file_type,
+            "by_status": by_status,
         }
     
     async def update_stats(self, kb_id: str) -> None:

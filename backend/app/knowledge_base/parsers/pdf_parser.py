@@ -2363,7 +2363,7 @@ class PDFParser(DocumentParser):
             elif parser_type == "mineru":
                 self._parsers[parser_type] = MinerUParser(**self.mineru_config)
             else:
-                raise ValueError(f"Unknown parser type: {parser_type}")
+                raise ValueError(f"Unknown parser type: {parser_type}. Available: pymupdf, pdfplumber, ocr, docling, mineru")
         
         return self._parsers[parser_type]
     

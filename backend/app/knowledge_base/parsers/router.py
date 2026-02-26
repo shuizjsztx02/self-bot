@@ -294,4 +294,6 @@ class ParserRouter:
     
     def is_supported(self, file_path: str) -> bool:
         ext = Path(file_path).suffix.lower()
+        if not ext and file_path.startswith('.'):
+            ext = file_path.lower()
         return ext in self._primary_parsers

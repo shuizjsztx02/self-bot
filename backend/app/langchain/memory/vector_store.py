@@ -263,11 +263,12 @@ class ChromaVectorStore:
     def __init__(
         self,
         collection_name: str = "memory_store",
-        persist_directory: str = "./data/chroma",
+        persist_directory: str = None,
         embedding_dim: int = 768,
     ):
+        from app.config import settings
         self.collection_name = collection_name
-        self.persist_directory = persist_directory
+        self.persist_directory = persist_directory or settings.AGENT_VECTOR_PATH
         self.embedding_dim = embedding_dim
         self._collection = None
         self._client = None

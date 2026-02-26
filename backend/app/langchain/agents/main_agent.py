@@ -52,8 +52,8 @@ class MainAgent:
         )
         
         self.long_term_memory = LongTermMemory(
-            storage_path=settings.MEMORY_STORAGE_PATH,
-            chroma_path=settings.MEMORY_CHROMA_PATH,
+            storage_path=settings.AGENT_MEMORY_PATH,
+            chroma_path=settings.AGENT_VECTOR_PATH,
             embedding_model=settings.EMBEDDING_MODEL,
             reranker_model=settings.RERANKER_MODEL,
         )

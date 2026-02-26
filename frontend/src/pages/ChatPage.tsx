@@ -12,9 +12,9 @@ export default function ChatPage() {
   }, [])
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen overflow-hidden">
       <Sidebar />
-      <div className="flex flex-1 flex-col">
+      <div className="flex flex-1 flex-col overflow-hidden">
         <MessageList
           messages={messages}
           isLoading={isLoading}

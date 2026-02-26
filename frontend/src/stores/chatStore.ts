@@ -88,7 +88,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string) => {
-    const { currentConversation, createConversation, settings } = get()
+    const { currentConversation, settings } = get()
 
     set({ isStreaming: true, streamingContent: '' })
 

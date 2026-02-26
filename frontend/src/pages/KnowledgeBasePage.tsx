@@ -1,7 +1,7 @@
 import { useKnowledgeStore } from '../stores/knowledgeStore'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Database, FileText, Settings, Trash2 } from 'lucide-react'
+import { Plus, Database, FileText, Settings, Trash2, MessageSquare } from 'lucide-react'
 import KnowledgeBaseForm from '../components/KnowledgeBaseForm'
 import { toast } from '../components/Toast'
 import { formatDateShort } from '../utils'
@@ -91,11 +91,22 @@ export default function KnowledgeBasePage() {
     <div className="h-full flex flex-col">
       <div className="border-b bg-white px-6 py-4">
         <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold">知识库管理</h1>
-            <p className="text-gray-500 text-sm mt-1">
-              共 {knowledgeBases.length} 个知识库
-            </p>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => navigate('/')}
+              className="flex items-center gap-2 text-gray-600 hover:text-primary-600 transition-colors"
+              title="返回聊天"
+            >
+              <MessageSquare className="h-5 w-5" />
+              <span className="text-sm font-medium">返回聊天</span>
+            </button>
+            <div className="h-6 w-px bg-gray-200" />
+            <div>
+              <h1 className="text-2xl font-bold">知识库管理</h1>
+              <p className="text-gray-500 text-sm mt-1">
+                共 {knowledgeBases.length} 个知识库
+              </p>
+            </div>
           </div>
           <button
             onClick={() => setShowCreateForm(true)}

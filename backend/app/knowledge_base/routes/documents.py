@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, BackgroundTasks, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 
@@ -42,13 +42,17 @@ async def process_document(
         kb_id: 知识库ID
         file_path: 文件路径
     """
-    from app.db.session import async_session_factory
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"开始处理文档: doc_id={doc_id}, kb_id={kb_id}, file_path={file_path}")
+    
+    from app.db.session import AsyncSessionLocal
     
     container = ServiceContainer.get_instance()
     vector_store = container.vector_store
     embedding_service = container.embedding_service
     
-    async with async_session_factory() as session:
+    async with AsyncSessionLocal() as session:
         try:
             doc_service = DocumentService(
                 db=session,
@@ -56,11 +60,15 @@ async def process_document(
                 embedding_service=embedding_service,
             )
             
+            logger.info(f"更新文档状态为处理中: doc_id={doc_id}")
             await doc_service.update_status(doc_id, DocumentStatus.PROCESSING)
             
+            logger.info(f"开始解析文档: {file_path}")
             parser_router = ParserRouter()
             chunks = await parser_router.parse_and_chunk(file_path)
+            logger.info(f"文档解析完成，共 {len(chunks)} 个分块")
             
+            logger.info(f"添加分块到数据库: doc_id={doc_id}")
             db_chunks = await doc_service.add_chunks(doc_id, kb_id, [
                 {
                     "content": c.content,
@@ -71,9 +79,13 @@ async def process_document(
                 }
                 for c in chunks
             ])
+            logger.info(f"已添加 {len(db_chunks)} 个分块到数据库")
             
+            logger.info(f"开始向量化分块: kb_id={kb_id}")
             await doc_service.index_chunks(kb_id, db_chunks)
+            logger.info(f"向量化完成")
             
+            logger.info(f"构建 BM25 索引: kb_id={kb_id}")
             bm25_documents = [
                 {
                     "id": chunk.id,
@@ -94,14 +106,18 @@ async def process_document(
                 embedding_service=embedding_service,
             )
             search_service.build_bm25_index(kb_id, bm25_documents)
+            logger.info(f"BM25 索引构建完成")
             
             kb_service = KnowledgeBaseService(session, vector_store)
             await kb_service.update_stats(kb_id)
+            logger.info(f"知识库统计更新完成")
             
             await doc_service.update_status(doc_id, DocumentStatus.COMPLETED)
+            logger.info(f"文档处理完成: doc_id={doc_id}")
             
         except Exception as e:
-            async with async_session_factory() as error_session:
+            logger.error(f"文档处理失败: doc_id={doc_id}, error={e}", exc_info=True)
+            async with AsyncSessionLocal() as error_session:
                 error_doc_service = DocumentService(
                     db=error_session,
                     vector_store=vector_store,
@@ -116,19 +132,22 @@ async def process_document(
 
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
-    kb_id: str,
+    background_tasks: BackgroundTasks,
+    kb_id: str = Form(...),
     file: UploadFile = File(...),
-    folder_id: Optional[str] = None,
-    title: Optional[str] = None,
-    author: Optional[str] = None,
-    source: Optional[str] = None,
-    tags: str = "",
-    background_tasks: BackgroundTasks = None,
+    folder_id: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    author: Optional[str] = Form(None),
+    source: Optional[str] = Form(None),
+    tags: str = Form(""),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_async_session),
     doc_service: DocumentService = Depends(get_document_service),
     permission_service: PermissionService = Depends(get_permission_service),
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     has_permission = await permission_service.has_permission(
         current_user.id, kb_id, "editor"
     )
@@ -137,12 +156,25 @@ async def upload_document(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     
     file_ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+    logger.info(f"Uploading file: {file.filename}, extension: {file_ext}")
     
-    parser_router = ParserRouter()
-    if not parser_router.is_supported(f".{file_ext}"):
+    try:
+        parser_router = ParserRouter()
+        supported_exts = parser_router.supported_extensions()
+        logger.info(f"Supported extensions: {supported_exts}")
+        
+        if not parser_router.is_supported(f".{file_ext}"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type: .{file_ext}. Supported types: {', '.join(supported_exts)}",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error initializing parser: {e}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file type: {file_ext}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Parser initialization error: {str(e)}",
         )
     
     file_content = await file.read()
@@ -162,12 +194,17 @@ async def upload_document(
         },
     )
     
+    logger.info(f"文档上传成功: doc_id={doc.id}, file_path={doc.file_path}")
+    logger.info(f"添加后台任务: process_document")
+    
     background_tasks.add_task(
         process_document,
         doc.id,
         kb_id,
         doc.file_path,
     )
+    
+    logger.info(f"后台任务已添加，返回响应")
     
     return doc
 

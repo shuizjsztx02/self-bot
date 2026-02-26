@@ -13,6 +13,7 @@ from ..models import Document, DocumentVersion, DocumentChunk, DocumentStatus
 from ..schemas import DocumentUpload
 from ..vector_store import VectorStoreBackend
 from .embedding import EmbeddingService
+from app.config import settings
 
 
 class DocumentService:
@@ -22,12 +23,12 @@ class DocumentService:
         db: AsyncSession,
         vector_store: VectorStoreBackend,
         embedding_service: EmbeddingService,
-        storage_path: str = "./data/knowledge_bases",
+        storage_path: str = None,
     ):
         self.db = db
         self.vector_store = vector_store
         self.embedding_service = embedding_service
-        self.storage_path = storage_path
+        self.storage_path = storage_path or settings.KB_DOCUMENT_PATH
     
     async def upload_document(
         self,
@@ -132,6 +133,12 @@ class DocumentService:
         if chunk_ids:
             await self.vector_store.delete(collection_name, chunk_ids)
         
+        for chunk in doc.chunks:
+            await self.db.delete(chunk)
+        
+        for version in doc.versions:
+            await self.db.delete(version)
+        
         await self.db.delete(doc)
         await self.db.commit()
         
@@ -217,11 +224,11 @@ class DocumentService:
             chunk.vector_id = vector_id
             ids.append(vector_id)
             metadatas.append({
-                "doc_id": chunk.doc_id,
-                "chunk_id": chunk.id,
-                "chunk_index": chunk.chunk_index,
-                "page_number": chunk.page_number,
-                "section_title": chunk.section_title,
+                "doc_id": chunk.doc_id or "",
+                "chunk_id": chunk.id or "",
+                "chunk_index": chunk.chunk_index or 0,
+                "page_number": chunk.page_number or 0,
+                "section_title": chunk.section_title or "",
             })
             documents.append(chunk.content)
         

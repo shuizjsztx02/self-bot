@@ -3,7 +3,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { Message } from '../types'
 import { cn } from '../utils'
-import { Wrench, User, Bot, AlertCircle, Square } from 'lucide-react'
+import { Wrench, User, Bot, Square } from 'lucide-react'
 
 interface MessageItemProps {
   message: Message
@@ -67,7 +67,7 @@ export default function MessageItem({ message }: MessageItemProps) {
         )}
 
         {message.content && (
-          <div className="prose prose-sm dark:prose-invert max-w-none">
+          <div className="prose prose-sm prose-wrap max-w-none overflow-x-auto">
             <ReactMarkdown
               components={{
                 code({ inline, className, children, ...props }: any) {

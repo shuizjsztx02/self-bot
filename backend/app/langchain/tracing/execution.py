@@ -71,8 +71,9 @@ class ExecutionTrace(BaseModel):
 class TraceStorage:
     """追踪存储"""
     
-    def __init__(self, storage_path: str = "./data/traces"):
-        self.storage_path = Path(storage_path)
+    def __init__(self, storage_path: str = None):
+        from app.config import settings
+        self.storage_path = Path(storage_path or settings.AGENT_TRACE_PATH)
         self.storage_path.mkdir(parents=True, exist_ok=True)
     
     async def save_trace(self, trace: ExecutionTrace):

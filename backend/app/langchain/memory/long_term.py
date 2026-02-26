@@ -7,19 +7,20 @@ from .md_storage import MDStorage, MemoryEntry
 from .vector_store import ChromaVectorStore, VectorDocument
 from .rag_retriever import RAGRetriever, RAGConfig
 from .summarizer import MemorySummarizer
+from app.config import settings
 
 
 class LongTermMemory:
     def __init__(
         self,
-        storage_path: str = "./data/memories",
-        chroma_path: str = "./data/chroma",
+        storage_path: str = None,
+        chroma_path: str = None,
         embedding_model: str = "BAAI/bge-base-zh-v1.5",
         reranker_model: str = "BAAI/bge-reranker-base",
     ):
-        self.md_storage = MDStorage(storage_path)
+        self.md_storage = MDStorage(storage_path or settings.AGENT_MEMORY_PATH)
         self.vector_store = ChromaVectorStore(
-            persist_directory=chroma_path,
+            persist_directory=chroma_path or settings.AGENT_VECTOR_PATH,
         )
         self.rag_config = RAGConfig(
             embedding_model=embedding_model,

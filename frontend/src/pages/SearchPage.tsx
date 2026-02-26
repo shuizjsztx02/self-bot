@@ -1,6 +1,7 @@
 import { useKnowledgeStore } from '../stores/knowledgeStore'
 import { useState, useEffect } from 'react'
-import { Search as SearchIcon, Filter, Sparkles, FileText, Zap } from 'lucide-react'
+import { Search as SearchIcon, Filter, Sparkles, FileText, Zap, MessageSquare } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import SearchResults from '../components/SearchResults'
 import SearchOptions, { 
   SearchMode, 
@@ -42,6 +43,7 @@ interface CompressionSearchResponse {
 }
 
 export default function SearchPage() {
+  const navigate = useNavigate()
   const { 
     knowledgeBases, 
     searchResults, 
@@ -222,7 +224,18 @@ export default function SearchPage() {
   return (
     <div className="h-full flex flex-col">
       <div className="border-b bg-white px-6 py-4">
-        <h1 className="text-2xl font-bold mb-4">知识库搜索</h1>
+        <div className="flex items-center gap-4 mb-4">
+          <button
+            onClick={() => navigate('/')}
+            className="flex items-center gap-2 text-gray-600 hover:text-primary-600 transition-colors"
+            title="返回聊天"
+          >
+            <MessageSquare className="h-5 w-5" />
+            <span className="text-sm font-medium">返回聊天</span>
+          </button>
+          <div className="h-6 w-px bg-gray-200" />
+          <h1 className="text-2xl font-bold">知识库搜索</h1>
+        </div>
         
         <div className="flex gap-3">
           <div className="flex-1 relative">

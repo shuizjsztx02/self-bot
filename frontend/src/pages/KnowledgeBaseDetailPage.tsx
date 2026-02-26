@@ -1,7 +1,7 @@
 import { useKnowledgeStore } from '../stores/knowledgeStore'
 import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { Settings, Trash2, Upload, FileText, RefreshCw, X, ChevronRight } from 'lucide-react'
+import { useParams, Link, useNavigate } from 'react-router-dom'
+import { Settings, Trash2, Upload, FileText, RefreshCw, X, ChevronRight, MessageSquare } from 'lucide-react'
 import DocumentUploader from '../components/DocumentUploader'
 import FolderTree from '../components/FolderTree'
 import { toast } from '../components/Toast'
@@ -11,6 +11,7 @@ import type { Folder, FolderCreate } from '../types/knowledge'
 
 export default function KnowledgeBaseDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const {
     currentKB,
     kbStats,
@@ -191,6 +192,15 @@ export default function KnowledgeBaseDetailPage() {
     <div className="h-full flex flex-col">
       <div className="border-b bg-white px-6 py-4">
         <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
+          <button
+            onClick={() => navigate('/')}
+            className="flex items-center gap-1 text-gray-600 hover:text-primary-600 transition-colors"
+            title="返回聊天"
+          >
+            <MessageSquare className="h-4 w-4" />
+            <span>返回聊天</span>
+          </button>
+          <ChevronRight className="h-4 w-4" />
           <Link to="/knowledge" className="hover:text-blue-500">知识库</Link>
           <ChevronRight className="h-4 w-4" />
           <span className="text-gray-900">{currentKB.name}</span>
