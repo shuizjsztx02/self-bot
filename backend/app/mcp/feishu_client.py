@@ -15,13 +15,20 @@ from pydantic import Field, create_model
 _feishu_session: Optional[ClientSession] = None
 _feishu_tools: List[BaseTool] = []
 _feishu_context_manager = None
+_feishu_read = None
+_feishu_write = None
 
 
 async def start_feishu_mcp_session() -> ClientSession:
-    global _feishu_session, _feishu_context_manager
+    global _feishu_session, _feishu_context_manager, _feishu_read, _feishu_write
     
     if _feishu_session is not None:
-        return _feishu_session
+        try:
+            if _feishu_read is not None and _feishu_write is not None:
+                return _feishu_session
+        except Exception:
+            pass
+        await stop_feishu_mcp_session()
     
     feishu_app_id = os.getenv("FEISHU_APP_ID")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
@@ -53,9 +60,9 @@ async def start_feishu_mcp_session() -> ClientSession:
     print(f"Starting Feishu MCP with: {npx_cmd} -y @larksuiteoapi/lark-mcp mcp -a {feishu_app_id[:10]}... -s *** -l zh -m stdio")
     
     _feishu_context_manager = stdio_client(server_params)
-    read, write = await _feishu_context_manager.__aenter__()
+    _feishu_read, _feishu_write = await _feishu_context_manager.__aenter__()
     
-    _feishu_session = ClientSession(read, write)
+    _feishu_session = ClientSession(_feishu_read, _feishu_write)
     await _feishu_session.__aenter__()
     await _feishu_session.initialize()
     
@@ -64,7 +71,7 @@ async def start_feishu_mcp_session() -> ClientSession:
 
 
 async def stop_feishu_mcp_session():
-    global _feishu_session, _feishu_context_manager
+    global _feishu_session, _feishu_context_manager, _feishu_read, _feishu_write
     
     if _feishu_session is not None:
         try:
@@ -80,25 +87,40 @@ async def stop_feishu_mcp_session():
             pass
         _feishu_context_manager = None
     
+    _feishu_read = None
+    _feishu_write = None
+    
     print("Feishu MCP session stopped")
 
 
 async def get_feishu_mcp_tools() -> List[BaseTool]:
     global _feishu_tools
     
-    session = await start_feishu_mcp_session()
-    
-    tools_response = await session.list_tools()
-    mcp_tools = tools_response.tools
-    
-    _feishu_tools = []
-    
-    for mcp_tool in mcp_tools:
-        tool = _convert_mcp_tool_to_langchain(session, mcp_tool)
-        _feishu_tools.append(tool)
-    
-    print(f"Loaded {len(_feishu_tools)} Feishu MCP tools")
-    return _feishu_tools
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            session = await start_feishu_mcp_session()
+            
+            tools_response = await session.list_tools()
+            mcp_tools = tools_response.tools
+            
+            _feishu_tools = []
+            
+            for mcp_tool in mcp_tools:
+                tool = _convert_mcp_tool_to_langchain(session, mcp_tool)
+                _feishu_tools.append(tool)
+            
+            print(f"Loaded {len(_feishu_tools)} Feishu MCP tools")
+            return _feishu_tools
+            
+        except Exception as e:
+            print(f"Feishu MCP attempt {attempt + 1} failed: {e}")
+            await stop_feishu_mcp_session()
+            
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+            else:
+                raise
 
 
 def _convert_mcp_tool_to_langchain(session: ClientSession, mcp_tool) -> BaseTool:

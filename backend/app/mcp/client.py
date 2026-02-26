@@ -8,6 +8,18 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field, create_model
 
+from app.config import settings
+
+
+def get_workspace_path() -> Path:
+    workspace = settings.WORKSPACE_PATH
+    if not os.path.isabs(workspace):
+        workspace = Path(__file__).parent.parent.parent / workspace
+    else:
+        workspace = Path(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
 
 class MCPClient:
     def __init__(self, server_script: str, server_args: List[str] = None, cwd: str = None, env: dict = None, command: str = None, use_shell: bool = False, use_module: bool = False):
@@ -292,13 +304,15 @@ async def get_word_mcp_tools() -> List[BaseTool]:
     
     base_path = Path(__file__).parent.parent.parent / "mcp_servers" / "word"
     server_script = str(base_path / "word_mcp_server.py")
+    workspace_path = get_workspace_path()
     
     if not Path(server_script).exists():
         print(f"Warning: Word MCP server not found at {server_script}")
         return []
     
     print(f"Loading Word MCP from: {server_script}")
-    return await manager.register_server("word", server_script, cwd=str(base_path))
+    print(f"Word MCP workspace: {workspace_path}")
+    return await manager.register_server("word", server_script, cwd=str(workspace_path))
 
 
 async def get_excel_mcp_tools() -> List[BaseTool]:
@@ -306,6 +320,7 @@ async def get_excel_mcp_tools() -> List[BaseTool]:
     
     base_path = Path(__file__).parent.parent.parent / "mcp_servers" / "excel"
     src_path = base_path / "src"
+    workspace_path = get_workspace_path()
     
     if not src_path.exists():
         print(f"Warning: Excel MCP server not found at {src_path}")
@@ -315,11 +330,12 @@ async def get_excel_mcp_tools() -> List[BaseTool]:
     env["PYTHONPATH"] = str(src_path)
     
     print(f"Loading Excel MCP from: {src_path}")
+    print(f"Excel MCP workspace: {workspace_path}")
     return await manager.register_server(
         "excel",
         server_script="excel_mcp",
         server_args=["stdio"],
-        cwd=str(src_path),
+        cwd=str(workspace_path),
         env=env,
         command=sys.executable,
         use_module=True,
@@ -331,13 +347,15 @@ async def get_pptx_mcp_tools() -> List[BaseTool]:
     
     base_path = Path(__file__).parent.parent.parent / "mcp_servers" / "pptx"
     server_script = str(base_path / "ppt_mcp_server.py")
+    workspace_path = get_workspace_path()
     
     if not Path(server_script).exists():
         print(f"Warning: PPTX MCP server not found at {server_script}")
         return []
     
     print(f"Loading PPTX MCP from: {server_script}")
-    return await manager.register_server("pptx", server_script, cwd=str(base_path))
+    print(f"PPTX MCP workspace: {workspace_path}")
+    return await manager.register_server("pptx", server_script, cwd=str(workspace_path))
 
 
 async def get_notion_mcp_tools() -> List[BaseTool]:
