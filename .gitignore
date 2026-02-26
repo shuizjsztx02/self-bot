@@ -9,6 +9,12 @@ venv/
 env/
 .env
 
+# data
+data/
+backend/data/
+docs/
+workspace/
+
 # Node
 node_modules/
 dist/
