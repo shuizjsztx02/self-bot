@@ -78,16 +78,37 @@ export default function SearchPage() {
       return
     }
 
+    useKnowledgeStore.setState({ isSearching: true, error: null })
+
     try {
       if (searchOptions.mode === 'hybrid') {
-        await search(
-          query.trim(),
-          [kbId],
-          { 
+        if (selectedKB) {
+          const response = await knowledgeApi.hybridSearch({
+            query: query.trim(),
+            kb_id: kbId,
             top_k: searchOptions.topK,
+            alpha: searchOptions.alpha,
             use_rerank: searchOptions.useRerank,
-          }
-        )
+          })
+          useKnowledgeStore.setState({
+            searchResults: response.results,
+            searchTimeMs: response.search_time_ms,
+            isSearching: false,
+          })
+        } else {
+          const response = await knowledgeApi.crossHybridSearch({
+            query: query.trim(),
+            kb_ids: undefined,
+            top_k: searchOptions.topK,
+            alpha: searchOptions.alpha,
+            use_rerank: searchOptions.useRerank,
+          })
+          useKnowledgeStore.setState({
+            searchResults: response.results,
+            searchTimeMs: response.search_time_ms,
+            isSearching: false,
+          })
+        }
       } else if (searchOptions.mode === 'attribution') {
         const response = await knowledgeApi.searchWithAttribution({
           query: query.trim(),
@@ -118,6 +139,8 @@ export default function SearchPage() {
       }
     } catch (e) {
       console.error('Search error:', e)
+      const errorMsg = e instanceof Error ? e.message : '搜索失败，请稍后重试'
+      useKnowledgeStore.setState({ error: errorMsg, isSearching: false })
     }
   }
 

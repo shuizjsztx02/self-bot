@@ -38,8 +38,8 @@ class ParserRouter:
             '.doc': DocxParser(),
             '.pptx': PPTXParser(),
             '.ppt': PPTXParser(),
-            '.xlsx': ExcelParser(),
-            '.xls': ExcelParser(),
+            '.xlsx': ExcelParser(max_rows_per_sheet=self.config.get('max_excel_rows', 10000)),
+            '.xls': ExcelParser(max_rows_per_sheet=self.config.get('max_excel_rows', 10000)),
         }
         
         self._fallback_parser = DoclingParser(

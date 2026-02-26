@@ -114,6 +114,7 @@ class IntentClassifier:
         r"内部.*文档|资料",
         r"报销|请假|考勤",
         r"财务|预算|审批",
+        r"self-bot|面试",
     ]
     
     DOCUMENT_PATTERNS = [

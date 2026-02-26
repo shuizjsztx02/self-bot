@@ -2,20 +2,72 @@ from langchain_core.tools import StructuredTool
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Any
+from dataclasses import dataclass, field as dataclass_field
+import logging
 
 from app.langchain.llm import get_llm
 from app.knowledge_base.schemas import SearchResult, RAGSearchInput
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RagAgentConfig:
+    """RagAgent 配置"""
+    max_history_turns: int = 10
+    max_context_tokens: int = 4000
+    max_retrieved_docs: int = 10
+    top_k: int = 5
+    use_hybrid: bool = True
+    use_rerank: bool = True
+    hybrid_alpha: float = 0.5
+    enable_query_rewrite: bool = True
+    enable_query_expansion: bool = True
+
+
+@dataclass
+class RagProcessResult:
+    """查询处理结果"""
+    query: str
+    rewritten_query: str
+    query_variations: List[str]
+    entities: List[str]
+    documents: List[SearchResult]
+    formatted_context: str
+    
+    @classmethod
+    def empty(cls, query: str) -> "RagProcessResult":
+        return cls(
+            query=query,
+            rewritten_query=query,
+            query_variations=[],
+            entities=[],
+            documents=[],
+            formatted_context="",
+        )
+
+
+@dataclass
+class RagChatResult:
+    """RAG 对话结果"""
+    query: str
+    rewritten_query: str
+    formatted_context: str
+    sources: List[SearchResult]
+    entities: List[str]
+
 
 class RagAgent:
     """
-    RAG知识库Agent
+    RAG知识库Agent - 完整版
     
     职责：
-    1. 知识库检索与RAG增强
-    2. 提供检索工具供其他Agent调用
-    3. 支持独立执行检索任务
+    1. 查询增强 - 重写、扩展、实体提取
+    2. 对话上下文管理 - 多轮对话上下文
+    3. 知识库检索 - 权限检查 + 混合检索
+    4. 上下文压缩 - Token 预算控制
+    5. 结果格式化 - 生成 RAG 上下文
     """
     
     def __init__(
@@ -23,14 +75,20 @@ class RagAgent:
         llm: Optional[ChatOpenAI] = None,
         user_id: Optional[str] = None,
         db_session=None,
+        config: Optional[RagAgentConfig] = None,
     ):
         self._llm = llm
         self.user_id = user_id
         self.db_session = db_session
+        self.config = config or RagAgentConfig()
         
         self._search_service = None
         self._permission_service = None
         self._kb_service = None
+        
+        self._context_manager = None
+        self._query_rewriter = None
+        self._context_compressor = None
     
     def _get_llm(self) -> ChatOpenAI:
         if self._llm is None:
@@ -38,11 +96,16 @@ class RagAgent:
         return self._llm
     
     async def _get_services(self):
+        """懒加载所有服务"""
         if self._search_service is None:
             from app.knowledge_base.services import SearchService, PermissionService, KnowledgeBaseService
             from app.knowledge_base.services.embedding import EmbeddingService
             from app.knowledge_base.vector_store import VectorStoreFactory
             from app.db.session import get_async_session
+            from app.langchain.services.rag.context_manager import ContextManager
+            from app.langchain.services.rag.query_rewriter import QueryRewriter
+            from app.langchain.services.rag.rag_types import QueryRewriteConfig
+            from app.knowledge_base.services.compression import ContextCompressor, CompressionConfig
             
             if self.db_session is None:
                 async for session in get_async_session():
@@ -58,6 +121,249 @@ class RagAgent:
             )
             self._permission_service = PermissionService(self.db_session)
             self._kb_service = KnowledgeBaseService(self.db_session, vector_store)
+            
+            self._context_manager = ContextManager(
+                max_turns=self.config.max_history_turns,
+                max_tokens=self.config.max_context_tokens // 2,
+            )
+            
+            self._query_rewriter = QueryRewriter(
+                config=QueryRewriteConfig(
+                    max_history_turns=self.config.max_history_turns,
+                    enable_query_expansion=self.config.enable_query_expansion,
+                ),
+                llm_client=self._llm,
+            )
+            
+            self._context_compressor = ContextCompressor(
+                config=CompressionConfig(
+                    max_tokens=self.config.max_context_tokens,
+                    max_documents=self.config.max_retrieved_docs,
+                ),
+                embedding_service=embedding_service,
+            )
+    
+    async def process_query(
+        self,
+        query: str,
+        kb_ids: Optional[List[str]] = None,
+        top_k: int = 5,
+    ) -> RagProcessResult:
+        """
+        完整的查询处理流程
+        
+        流程：
+        1. 查询重写（代词解析 + LLM 重写）
+        2. 查询扩展（生成变体）
+        3. 权限检查
+        4. 多查询检索
+        5. 结果合并去重
+        6. 上下文压缩
+        7. 格式化输出
+        """
+        await self._get_services()
+        
+        history = self._context_manager.get_history()
+        
+        if self.config.enable_query_rewrite:
+            rewrite_result = await self._query_rewriter.rewrite(query, history)
+        else:
+            from app.langchain.routers.types import RewrittenQuery
+            rewrite_result = RewrittenQuery(
+                original_query=query,
+                rewritten_query=query,
+            )
+        
+        all_queries = [rewrite_result.rewritten_query] + rewrite_result.variations
+        
+        accessible_kbs = await self._permission_service.get_accessible_kbs(self.user_id)
+        
+        if not accessible_kbs:
+            return RagProcessResult.empty(query)
+        
+        if kb_ids:
+            kb_ids = [kb for kb in kb_ids if kb in accessible_kbs]
+        else:
+            kb_ids = accessible_kbs
+        
+        if not kb_ids:
+            return RagProcessResult.empty(query)
+        
+        all_results = await self._multi_query_search(all_queries, kb_ids, top_k)
+        
+        await self._fill_metadata(all_results)
+        
+        conversation_context = self._context_manager.get_context_for_query(query)
+        formatted_context = await self._compress_context(
+            rewrite_result.rewritten_query,
+            all_results,
+            conversation_context,
+        )
+        
+        return RagProcessResult(
+            query=query,
+            rewritten_query=rewrite_result.rewritten_query,
+            query_variations=rewrite_result.variations,
+            entities=rewrite_result.extracted_entities,
+            documents=all_results,
+            formatted_context=formatted_context,
+        )
+    
+    async def _multi_query_search(
+        self,
+        queries: List[str],
+        kb_ids: List[str],
+        top_k: int,
+    ) -> List[SearchResult]:
+        """多查询检索，合并去重"""
+        all_results = []
+        seen_ids = set()
+        
+        for query in queries:
+            if self.config.use_hybrid:
+                results = await self._search_service.cross_hybrid_search(
+                    kb_ids=kb_ids,
+                    query=query,
+                    top_k=top_k,
+                    alpha=self.config.hybrid_alpha,
+                    use_rerank=self.config.use_rerank,
+                    deduplicate=False,
+                )
+            else:
+                results = await self._search_service.cross_search(
+                    kb_ids=kb_ids,
+                    query=query,
+                    top_k=top_k,
+                    use_rerank=self.config.use_rerank,
+                )
+            
+            for r in results:
+                if r.chunk_id not in seen_ids:
+                    seen_ids.add(r.chunk_id)
+                    all_results.append(r)
+        
+        all_results.sort(key=lambda x: x.score, reverse=True)
+        return all_results[:self.config.max_retrieved_docs]
+    
+    async def _compress_context(
+        self,
+        query: str,
+        documents: List[SearchResult],
+        conversation_context: str,
+    ) -> str:
+        """压缩上下文"""
+        if not documents:
+            return ""
+        
+        formatted_context, _ = await self._context_compressor.compress_with_context(
+            query=query,
+            documents=documents,
+            conversation_context=conversation_context,
+            max_tokens=self.config.max_context_tokens,
+        )
+        
+        return formatted_context
+    
+    async def _fill_metadata(self, results: List[SearchResult]) -> None:
+        """填充 kb_name 和 doc_name"""
+        for result in results:
+            kb = await self._kb_service.get_by_id(result.kb_id)
+            if kb:
+                result.kb_name = kb.name
+            
+            from app.knowledge_base.models import Document
+            from sqlalchemy import select
+            doc_result = await self.db_session.execute(
+                select(Document).where(Document.id == result.doc_id)
+            )
+            doc = doc_result.scalar_one_or_none()
+            if doc:
+                result.doc_name = doc.filename
+    
+    async def chat_with_rag(
+        self,
+        query: str,
+        kb_ids: Optional[List[str]] = None,
+        top_k: int = 5,
+    ) -> RagChatResult:
+        """
+        完整的 RAG 对话流程
+        
+        包含：
+        - 查询处理
+        - 历史更新
+        - 返回结构化结果
+        """
+        process_result = await self.process_query(query, kb_ids, top_k)
+        
+        self._context_manager.add_user_message(query)
+        if process_result.rewritten_query != query:
+            self._context_manager.update_last_user_message(
+                original=query,
+                rewritten=process_result.rewritten_query,
+            )
+        
+        return RagChatResult(
+            query=query,
+            rewritten_query=process_result.rewritten_query,
+            formatted_context=process_result.formatted_context,
+            sources=process_result.documents,
+            entities=process_result.entities,
+        )
+    
+    async def chat_with_rag_stream(
+        self,
+        query: str,
+        kb_ids: Optional[List[str]] = None,
+        top_k: int = 5,
+    ):
+        """流式版本的 RAG 对话"""
+        await self._get_services()
+        
+        history = self._context_manager.get_history()
+        
+        if self.config.enable_query_rewrite:
+            rewrite_result = await self._query_rewriter.rewrite(query, history)
+        else:
+            from app.langchain.routers.types import RewrittenQuery
+            rewrite_result = RewrittenQuery(
+                original_query=query,
+                rewritten_query=query,
+            )
+        
+        yield {
+            "type": "rag_info",
+            "rewritten_query": rewrite_result.rewritten_query,
+            "query_variations": rewrite_result.variations,
+            "entities": rewrite_result.extracted_entities,
+        }
+        
+        process_result = await self.process_query(query, kb_ids, top_k)
+        
+        if process_result.documents:
+            yield {
+                "type": "rag_sources",
+                "sources": [
+                    {
+                        "kb_name": r.kb_name,
+                        "doc_name": r.doc_name,
+                        "score": r.score,
+                    }
+                    for r in process_result.documents[:5]
+                ],
+            }
+        
+        self._context_manager.add_user_message(query)
+        
+        yield {
+            "type": "rag_context",
+            "formatted_context": process_result.formatted_context,
+        }
+    
+    def add_assistant_message(self, content: str):
+        """添加助手消息到上下文"""
+        if self._context_manager:
+            self._context_manager.add_assistant_message(content)
     
     async def search(
         self,
@@ -69,16 +375,12 @@ class RagAgent:
         hybrid_alpha: float = 0.5,
     ) -> List[SearchResult]:
         """
-        独立执行知识库检索
-        供Supervisor直接调用
+        执行知识库检索（纯检索，不包含查询增强）
         
-        Args:
-            query: 查询文本
-            kb_ids: 知识库ID列表
-            top_k: 返回结果数量
-            use_rerank: 是否使用重排序
-            use_hybrid: 是否使用混合检索（向量+BM25）
-            hybrid_alpha: 向量检索权重（0-1），1-alpha为BM25权重
+        职责分离：
+        - 权限检查：本方法处理
+        - 检索逻辑：委托给 SearchService
+        - 元数据填充：本方法处理
         """
         await self._get_services()
         
@@ -95,13 +397,14 @@ class RagAgent:
         if not kb_ids:
             return []
         
-        if use_hybrid and hasattr(self._search_service, 'hybrid_search'):
-            results = await self._hybrid_cross_search(
+        if use_hybrid and hasattr(self._search_service, 'cross_hybrid_search'):
+            results = await self._search_service.cross_hybrid_search(
                 kb_ids=kb_ids,
                 query=query,
                 top_k=top_k,
                 alpha=hybrid_alpha,
                 use_rerank=use_rerank,
+                deduplicate=True,
             )
         else:
             results = await self._search_service.cross_search(
@@ -111,70 +414,9 @@ class RagAgent:
                 use_rerank=use_rerank,
             )
         
-        for result in results:
-            kb = await self._kb_service.get_by_id(result.kb_id)
-            if kb:
-                result.kb_name = kb.name
-            
-            from app.knowledge_base.models import Document
-            from sqlalchemy import select
-            doc_result = await self.db_session.execute(
-                select(Document).where(Document.id == result.doc_id)
-            )
-            doc = doc_result.scalar_one_or_none()
-            if doc:
-                result.doc_name = doc.filename
+        await self._fill_metadata(results)
         
         return results
-    
-    async def _hybrid_cross_search(
-        self,
-        kb_ids: List[str],
-        query: str,
-        top_k: int = 5,
-        alpha: float = 0.5,
-        use_rerank: bool = True,
-    ) -> List[SearchResult]:
-        """
-        跨知识库混合检索
-        
-        对每个知识库执行混合检索，然后合并结果
-        """
-        import asyncio
-        
-        tasks = [
-            self._search_service.hybrid_search(
-                kb_id=kb_id,
-                query=query,
-                top_k=top_k * 2,
-                alpha=alpha,
-                use_rerank=False,
-            )
-            for kb_id in kb_ids
-        ]
-        
-        results_per_kb = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        all_results = []
-        seen_ids = set()
-        
-        for results in results_per_kb:
-            if isinstance(results, Exception):
-                continue
-            for r in results:
-                if r.chunk_id not in seen_ids:
-                    seen_ids.add(r.chunk_id)
-                    all_results.append(r)
-        
-        if not all_results:
-            return []
-        
-        if use_rerank and self._search_service.reranker:
-            all_results = await self._search_service._rerank(query, all_results)
-        else:
-            all_results.sort(key=lambda x: x.score, reverse=True)
-        
-        return all_results[:top_k]
     
     async def get_rag_context(
         self,

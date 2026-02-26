@@ -3,7 +3,7 @@ import type { Conversation, Settings } from '../types'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 60000,
 })
 
 api.interceptors.request.use(

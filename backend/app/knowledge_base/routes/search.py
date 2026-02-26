@@ -12,6 +12,7 @@ from app.knowledge_base.schemas import (
     SearchResponse,
     SearchResult,
     HybridSearchRequest,
+    CrossHybridSearchRequest,
     AttributionSearchRequest,
     RAGResponse,
     SourceReference,
@@ -109,6 +110,87 @@ async def search_knowledge_bases(
     )
 
 
+@router.post("/cross-hybrid", response_model=SearchResponse)
+async def cross_hybrid_search(
+    request: CrossHybridSearchRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_async_session),
+    search_service: SearchService = Depends(get_search_service),
+    permission_service: PermissionService = Depends(get_permission_service),
+):
+    """
+    跨库混合检索：向量检索 + BM25 检索
+    
+    在多个知识库中进行混合搜索，使用RRF算法融合向量检索和BM25检索结果。
+    
+    Args:
+        request: CrossHybridSearchRequest
+            - query: 搜索查询
+            - kb_ids: 知识库ID列表（如果为空则搜索所有有权限的知识库）
+            - top_k: 返回结果数量
+            - alpha: 向量检索权重(0-1)，1-alpha为BM25权重
+            - use_rerank: 是否使用重排序
+    
+    Returns:
+        SearchResponse: 搜索结果
+    """
+    start_time = time.time()
+    
+    kb_ids = request.kb_ids if request.kb_ids else []
+    
+    if not kb_ids:
+        result = await db.execute(
+            select(KnowledgeBase.id)
+        )
+        kb_ids = [row[0] for row in result.all()]
+    
+    accessible_kb_ids = []
+    for kb_id in kb_ids:
+        has_permission = await permission_service.has_permission(
+            current_user.id, kb_id, "viewer"
+        )
+        if has_permission:
+            accessible_kb_ids.append(kb_id)
+    
+    if not accessible_kb_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No accessible knowledge bases",
+        )
+    
+    results = await search_service.cross_hybrid_search(
+        kb_ids=accessible_kb_ids,
+        query=request.query,
+        top_k=request.top_k,
+        alpha=request.alpha,
+        use_rerank=request.use_rerank,
+    )
+    
+    kb_service = KnowledgeBaseService(db, search_service.vector_store)
+    
+    for result in results:
+        kb = await kb_service.get_by_id(result.kb_id)
+        if kb:
+            result.kb_name = kb.name
+        
+        doc_result = await db.execute(
+            select(Document).where(Document.id == result.doc_id)
+        )
+        doc = doc_result.scalar_one_or_none()
+        if doc:
+            result.doc_name = doc.filename
+    
+    search_time = (time.time() - start_time) * 1000
+    
+    return SearchResponse(
+        query=request.query,
+        results=results,
+        total=len(results),
+        kb_searched=accessible_kb_ids,
+        search_time_ms=search_time,
+    )
+
+
 @router.post("/kb/{kb_id}", response_model=SearchResponse)
 async def search_single_knowledge_base(
     kb_id: str,
@@ -177,6 +259,8 @@ async def hybrid_search(
     request: HybridSearchRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_async_session),
+    search_service: SearchService = Depends(get_search_service),
+    permission_service: PermissionService = Depends(get_permission_service),
 ):
     """
     混合检索：向量检索 + BM25 检索
@@ -197,8 +281,6 @@ async def hybrid_search(
     """
     start_time = time.time()
     
-    permission_service = PermissionService(db)
-    
     has_permission = await permission_service.has_permission(
         current_user.id, request.kb_id, "viewer"
     )
@@ -209,13 +291,6 @@ async def hybrid_search(
             detail="Access denied",
         )
     
-    vector_store = VectorStoreFactory.create("chroma")
-    embedding_service = EmbeddingService()
-    search_service = SearchService(
-        vector_store=vector_store,
-        embedding_service=embedding_service,
-    )
-    
     results = await search_service.hybrid_search(
         kb_id=request.kb_id,
         query=request.query,
@@ -224,7 +299,7 @@ async def hybrid_search(
         use_rerank=request.use_rerank,
     )
     
-    kb_service = KnowledgeBaseService(db, vector_store)
+    kb_service = KnowledgeBaseService(db, search_service.vector_store)
     kb = await kb_service.get_by_id(request.kb_id)
     
     for result in results:

@@ -106,7 +106,7 @@ class DocxParser(DocumentParser):
                         content=section_content,
                         token_count=self.count_tokens(section_content),
                         section_title=section['title'],
-                        metadata={'level': section['level']},
+                        chunk_metadata={'level': section['level']},
                     ))
                 else:
                     text_chunks = self.chunk_text(section_content, chunk_size, overlap)
@@ -115,7 +115,7 @@ class DocxParser(DocumentParser):
                             content=chunk,
                             token_count=self.count_tokens(chunk),
                             section_title=section['title'],
-                            metadata={
+                            chunk_metadata={
                                 'level': section['level'],
                                 'chunk_index': i,
                             },
@@ -126,7 +126,7 @@ class DocxParser(DocumentParser):
                 chunks.append(ChunkResult(
                     content=chunk,
                     token_count=self.count_tokens(chunk),
-                    metadata={'chunk_index': i},
+                    chunk_metadata={'chunk_index': i},
                 ))
         
         if parsed_doc.tables:
@@ -136,7 +136,7 @@ class DocxParser(DocumentParser):
                     chunks.append(ChunkResult(
                         content=table_text,
                         token_count=self.count_tokens(table_text),
-                        metadata={'table_index': i, 'is_table': True},
+                        chunk_metadata={'table_index': i, 'is_table': True},
                     ))
         
         return chunks

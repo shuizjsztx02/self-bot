@@ -7,6 +7,9 @@ from .base import DocumentParser, ParsedDocument, ChunkResult
 
 class ExcelParser(DocumentParser):
     
+    def __init__(self, max_rows_per_sheet: int = 10000):
+        self.max_rows_per_sheet = max_rows_per_sheet
+    
     async def parse(self, file_path: str) -> ParsedDocument:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._parse_sync, file_path)
@@ -49,9 +52,10 @@ class ExcelParser(DocumentParser):
             if sheet_data:
                 tables.append({
                     'sheet_name': sheet_name,
-                    'data': sheet_data[:100],
+                    'data': sheet_data[:self.max_rows_per_sheet],
                     'rows': len(sheet_data),
                     'cols': max(len(row) for row in sheet_data) if sheet_data else 0,
+                    'truncated': len(sheet_data) > self.max_rows_per_sheet,
                 })
         
         content = '\n\n'.join(all_text)

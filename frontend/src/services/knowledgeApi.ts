@@ -17,6 +17,7 @@ import type {
   LoginRequest,
   RegisterRequest,
   HybridSearchRequest,
+  CrossHybridSearchRequest,
   AttributionSearchRequest,
   RAGResponse,
   CompressionSearchRequest,
@@ -224,6 +225,15 @@ export const knowledgeApi = {
   hybridSearch: async (request: HybridSearchRequest): Promise<SearchResponse> => {
     try {
       const response = await api.post<SearchResponse>('/search/hybrid', request)
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  crossHybridSearch: async (request: CrossHybridSearchRequest): Promise<SearchResponse> => {
+    try {
+      const response = await api.post<SearchResponse>('/search/cross-hybrid', request)
       return response.data
     } catch (error) {
       throwApiError(error)

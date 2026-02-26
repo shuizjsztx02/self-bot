@@ -328,6 +328,14 @@ class HybridSearchRequest(BaseModel):
     use_rerank: bool = Field(default=False, description="是否使用重排序")
 
 
+class CrossHybridSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, description="搜索查询")
+    kb_ids: Optional[List[str]] = Field(default=None, description="知识库ID列表，为空则搜索所有")
+    top_k: int = Field(default=5, ge=1, le=50, description="返回结果数量")
+    alpha: float = Field(default=0.5, ge=0.0, le=1.0, description="向量检索权重(0-1)")
+    use_rerank: bool = Field(default=True, description="是否使用重排序")
+
+
 class AttributionSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="原始查询")
     kb_id: str = Field(..., description="知识库ID")

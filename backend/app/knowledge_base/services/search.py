@@ -85,7 +85,7 @@ class SearchService:
         
         search_results = []
         for result in results:
-            score = 1 - result.get("distance", 0)
+            score = result.get("score", 0)
             result_metadata = result.get("metadata", {})
             
             search_results.append(SearchResult(
@@ -240,7 +240,7 @@ class SearchService:
                     extra_data=doc.metadata,
                 ))
         
-        if use_rerank and self.reranker and len(search_results) > top_k:
+        if use_rerank and self.reranker:
             search_results = await self._rerank(query, search_results)
         
         elapsed = time.time() - start_time
@@ -251,6 +251,64 @@ class SearchService:
         )
         
         return search_results[:top_k]
+    
+    async def cross_hybrid_search(
+        self,
+        kb_ids: List[str],
+        query: str,
+        top_k: int = 5,
+        alpha: float = 0.5,
+        use_rerank: bool = True,
+        deduplicate: bool = True,
+    ) -> List[SearchResult]:
+        """
+        跨库混合检索：向量检索 + BM25 检索
+        
+        Args:
+            kb_ids: 知识库 ID 列表
+            query: 查询文本
+            top_k: 返回结果数量
+            alpha: 向量检索权重 (0-1)，1-alpha 为 BM25 权重
+            use_rerank: 是否使用重排序
+            deduplicate: 是否按 chunk_id 去重
+        
+        Returns:
+            混合检索结果列表
+        """
+        if not kb_ids:
+            return []
+        
+        tasks = [
+            self.hybrid_search(kb_id, query, top_k=top_k * 2, alpha=alpha, use_rerank=False)
+            for kb_id in kb_ids
+        ]
+        
+        results_per_kb = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        all_results = []
+        seen_ids = set() if deduplicate else None
+        
+        for results in results_per_kb:
+            if isinstance(results, Exception):
+                logger.warning(f"Hybrid search failed for one kb: {results}")
+                continue
+            for r in results:
+                if deduplicate:
+                    if r.chunk_id not in seen_ids:
+                        seen_ids.add(r.chunk_id)
+                        all_results.append(r)
+                else:
+                    all_results.append(r)
+        
+        if not all_results:
+            return []
+        
+        if use_rerank and self.reranker:
+            all_results = await self._rerank(query, all_results)
+        else:
+            all_results.sort(key=lambda x: x.score, reverse=True)
+        
+        return all_results[:top_k]
     
     async def _bm25_search(
         self,
@@ -270,10 +328,20 @@ class SearchService:
             BM25 检索结果列表
         """
         if kb_id not in self._bm25_indexes:
-            logger.warning(f"BM25 index not found for kb_id: {kb_id}")
-            return []
+            index_path = os.path.join(self.bm25_persist_path, f"bm25_{kb_id}.json")
+            if os.path.exists(index_path):
+                self._bm25_indexes[kb_id] = BM25Index(persist_path=index_path)
+                logger.info(f"Loaded BM25 index from {index_path}")
+            else:
+                logger.warning(f"BM25 index not found for kb_id: {kb_id}")
+                return []
         
         bm25_index = self._bm25_indexes[kb_id]
+        
+        if bm25_index.n_docs == 0:
+            logger.warning(f"BM25 index is empty for kb_id: {kb_id}")
+            return []
+        
         results = bm25_index.search(query, top_k=top_k)
         
         search_results = []

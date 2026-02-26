@@ -3,18 +3,13 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 import asyncio
 import uuid
-
+import logging
 from app.langchain.llm import get_llm
 from app.langchain.agents.main_agent import MainAgent
 from app.langchain.agents.researcher_agent import ResearcherAgent
 from app.langchain.agents.rag_agent import RagAgent
-from app.langchain.routers.intent_classifier import IntentClassifier, QueryIntent, IntentResult
-from app.langchain.routers.kb_router import KBRouter
-from app.langchain.routers.multi_turn_rag import (
-    MultiTurnRAGManager,
-    MultiTurnRAGConfig,
-    MultiTurnRAGPipeline,
-)
+from app.langchain.services.supervisor import IntentClassifier, QueryIntent, IntentResult, KBRouter
+from app.langchain.services.rag import ConversationTurn, RewrittenQuery, QueryRewriteConfig
 from app.db.session import get_async_session
 from app.langchain.agents.stream_interrupt import (
     StreamInterruptManager,
@@ -164,50 +159,12 @@ class SupervisorAgent:
         self.intent_classifier = IntentClassifier(llm=self.llm)
         self.result_selector = ResultSelector(llm=self.llm)
         self._kb_router = None
-        self._multi_turn_rag_manager = None
-        self._multi_turn_rag_pipeline = None
     
     @property
     def kb_router(self):
         if self._kb_router is None and self.db_session is not None:
             self._kb_router = KBRouter(db=self.db_session)
         return self._kb_router
-    
-    @property
-    def multi_turn_rag(self) -> MultiTurnRAGManager:
-        """
-        获取多轮对话RAG管理器（懒加载）
-        """
-        if self._multi_turn_rag_manager is None:
-            from app.knowledge_base.services.search import SearchService
-            from app.knowledge_base.services.embedding import EmbeddingService
-            from app.core.token_counter import TokenCounter
-            
-            config = MultiTurnRAGConfig(
-                max_history_turns=10,
-                max_context_tokens=4000,
-                max_retrieved_docs=10,
-                min_relevance_score=0.3,
-                enable_query_rewrite=True,
-                enable_compression=True,
-                enable_attribution=True,
-                enable_query_expansion=True,
-            )
-            
-            self._multi_turn_rag_manager = MultiTurnRAGManager(
-                config=config,
-                token_counter=TokenCounter(),
-                embedding_service=EmbeddingService(),
-                search_service=None,
-                llm_client=self.llm,
-            )
-        
-        return self._multi_turn_rag_manager
-    
-    def _get_search_service(self, db):
-        """获取搜索服务"""
-        from app.knowledge_base.services.search import SearchService
-        return SearchService(db)
     
     async def chat(self, message: str, db=None) -> dict:
         """
@@ -239,6 +196,7 @@ class SupervisorAgent:
         """
         routes = []
         primary_route = self._get_route(intent_result.intent)
+        logging.info(f"Primary route: {primary_route}")
         routes.append(primary_route)
         
         parallel_threshold = 0.65
@@ -427,53 +385,40 @@ class SupervisorAgent:
         db=None,
     ) -> dict:
         """
-        RAG增强对话（使用MultiTurnRAGManager）
+        RAG增强对话 - 简化版
         
-        功能：
-        1. 查询重写 - 处理依赖上下文的查询
-        2. 查询扩展 - 生成查询变体
-        3. 混合检索 - 向量+BM25
-        4. 上下文压缩 - 控制Token预算
-        5. 引用溯源 - 追踪来源
+        RagAgent 负责完整的 RAG 流程，SupervisorAgent 只负责协调
         """
-        kb_ids = None
-        if intent_result.kb_hints:
-            kb_ids = intent_result.kb_hints
+        kb_ids = intent_result.kb_hints
         
-        manager = self.multi_turn_rag
-        
-        if db:
-            manager.search_service = self._get_search_service(db)
-        
-        async def generate_response(query: str, context: str) -> str:
-            if context:
-                enhanced_message = f"{context}\n\n用户问题：{query}"
-            else:
-                enhanced_message = query
-            
-            result = await self.main_agent.chat(enhanced_message, db=db)
-            return result.get("output", "")
-        
-        rag_response = await manager.chat_with_rag(
+        rag_result = await self.rag_agent.chat_with_rag(
             query=message,
             kb_ids=kb_ids,
             top_k=5,
-            generate_response=generate_response,
         )
         
+        if rag_result.formatted_context:
+            enhanced_message = f"{rag_result.formatted_context}\n\n用户问题：{message}"
+        else:
+            enhanced_message = message
+        
+        result = await self.main_agent.chat(enhanced_message, db=db)
+        
+        self.rag_agent.add_assistant_message(result.get("output", ""))
+        
         return {
-            "output": rag_response.answer,
+            "output": result.get("output", ""),
             "sources": [
                 {
-                    "kb_name": s.kb_name,
-                    "doc_name": s.doc_name,
-                    "score": s.score,
-                    "chunk_id": s.chunk_id,
+                    "kb_name": r.kb_name,
+                    "doc_name": r.doc_name,
+                    "score": r.score,
+                    "chunk_id": r.chunk_id,
                 }
-                for s in rag_response.sources
+                for r in rag_result.sources[:5]
             ],
-            "rewritten_query": rag_response.rewritten_query,
-            "confidence": rag_response.overall_confidence,
+            "rewritten_query": rag_result.rewritten_query,
+            "entities": rag_result.entities,
         }
     
     async def _research_enhanced_chat(self, message: str, db=None) -> dict:
@@ -597,65 +542,30 @@ class SupervisorAgent:
         session_id: Optional[str] = None,
     ):
         """
-        RAG增强流式对话（使用MultiTurnRAGManager）
+        RAG增强流式对话 - 简化版
         
-        功能：
-        1. 查询重写
-        2. 混合检索
-        3. 上下文压缩
-        4. 流式生成回答
+        RagAgent 负责完整的 RAG 流程，SupervisorAgent 只负责协调
         """
-        kb_ids = None
-        if intent_result.kb_hints:
-            kb_ids = intent_result.kb_hints
+        kb_ids = intent_result.kb_hints
         
-        manager = self.multi_turn_rag
-        
-        if db:
-            manager.search_service = self._get_search_service(db)
-        
-        retrieval_result = await manager.process_query(
+        formatted_context = None
+        async for event in self.rag_agent.chat_with_rag_stream(
             query=message,
             kb_ids=kb_ids,
             top_k=5,
-        )
+        ):
+            if event["type"] == "rag_context":
+                formatted_context = event["formatted_context"]
+            else:
+                yield event
         
-        yield {
-            "type": "rag_info",
-            "rewritten_query": retrieval_result.rewritten_query,
-            "query_variations": retrieval_result.query_variations,
-            "entities": retrieval_result.entities,
-            "doc_count": len(retrieval_result.documents),
-        }
-        
-        if retrieval_result.documents:
-            yield {
-                "type": "rag_sources",
-                "sources": [
-                    {
-                        "kb_name": getattr(d, 'kb_name', ''),
-                        "doc_name": getattr(d, 'doc_name', ''),
-                        "score": getattr(d, 'score', 0),
-                    }
-                    for d in retrieval_result.documents[:5]
-                ],
-            }
-        
-        if retrieval_result.formatted_context:
-            enhanced_message = f"{retrieval_result.formatted_context}\n\n用户问题：{message}"
+        if formatted_context:
+            enhanced_message = f"{formatted_context}\n\n用户问题：{message}"
         else:
             enhanced_message = message
         
         async for chunk in self.main_agent.chat_stream(enhanced_message, db=db, session_id=session_id):
             yield chunk
-        
-        manager.add_user_message(message)
-        
-        if retrieval_result.rewritten_query != message:
-            manager.history_manager.update_last_user_message(
-                original=message,
-                rewritten=retrieval_result.rewritten_query,
-            )
     
     async def _research_enhanced_chat_stream(self, message: str, db=None, session_id: Optional[str] = None):
         """

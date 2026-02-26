@@ -225,6 +225,14 @@ export interface HybridSearchRequest {
   use_rerank?: boolean
 }
 
+export interface CrossHybridSearchRequest {
+  query: string
+  kb_ids?: string[]
+  top_k?: number
+  alpha?: number
+  use_rerank?: boolean
+}
+
 export interface AttributionSearchRequest {
   query: string
   kb_id: string
