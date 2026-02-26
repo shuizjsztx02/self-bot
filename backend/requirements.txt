@@ -1,0 +1,58 @@
+# Core
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-multipart>=0.0.6
+
+# Database
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+
+# LLM Providers
+openai>=1.12.0
+anthropic>=0.18.0
+
+# LangChain
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-community>=0.3.0
+
+# Vector Store
+chromadb>=0.5.0
+
+# Embeddings
+sentence-transformers>=2.2.0
+
+# Token counting
+tiktoken>=0.5.0
+
+# Utils
+python-dotenv>=1.0.0
+httpx>=0.26.0
+aiofiles>=23.2.1
+tenacity>=8.2.0
+rich>=13.7.0
+watchfiles>=0.20.0
+
+# Document Processing
+python-docx>=0.8.11
+docx2pdf>=0.1.8
+
+# MCP Integration
+mcp[cli]>=1.8.0
+fastmcp>=2.0.0
+
+# Excel MCP Server
+openpyxl>=3.1.5
+typer>=0.16.0
+
+# PPTX MCP Server
+python-pptx>=0.6.21
+Pillow>=8.0.0
+fonttools>=4.0.0
+
+# Development
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
