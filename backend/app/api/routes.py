@@ -7,6 +7,7 @@ import uuid
 from app.db import get_db
 from app.langchain import MainAgent
 from app.langchain.agents.supervisor_agent import SupervisorAgent
+from app.langchain.agents.agent_manager import agent_manager
 from app.langchain.tools import get_all_tools
 from app.config import settings
 from app.langchain.models.database import Conversation, Message, Memory, Skill as SkillModel
@@ -48,11 +49,11 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         await db.commit()
         await db.refresh(conversation)
     
-    agent = SupervisorAgent(
-        provider=request.provider or conversation.provider,
-        model=request.model or conversation.model,
+    agent = await agent_manager.get_agent(
         conversation_id=conversation.id,
         db_session=db,
+        provider=request.provider or conversation.provider,
+        model=request.model or conversation.model,
     )
     
     try:
@@ -113,11 +114,11 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         await db.refresh(conversation)
         logger.info(f"[API] Created new conversation: {conversation.id}")
     
-    agent = SupervisorAgent(
-        provider=request.provider or conversation.provider,
-        model=request.model or conversation.model,
+    agent = await agent_manager.get_agent(
         conversation_id=conversation.id,
         db_session=db,
+        provider=request.provider or conversation.provider,
+        model=request.model or conversation.model,
     )
     
     async def generate():
@@ -459,6 +460,5 @@ async def search_memory(
 
 @router.get("/memory/stats")
 async def get_memory_stats():
-    agent = MainAgent()
-    stats = agent.get_memory_stats()
+    stats = agent_manager.get_stats()
     return stats

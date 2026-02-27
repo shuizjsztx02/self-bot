@@ -57,7 +57,7 @@ class MDStorage:
     def _parse_md_content(self, content: str) -> tuple[dict, str]:
         lines = content.split("\n")
         
-        if lines[0] != "---":
+        if not lines or lines[0] != "---":
             return {}, content
         
         frontmatter = {}
@@ -76,6 +76,7 @@ class MDStorage:
                     frontmatter[key] = value
         
         body = "\n".join(lines[body_start:])
+        body = body.lstrip("\n")
         
         return frontmatter, body
     

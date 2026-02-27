@@ -1,15 +1,13 @@
 """
 向量存储实现
 
-支持多种后端：
-1. ChromaDB - 持久化向量数据库
-2. FAISS - 高效 ANN 索引
-3. 内存存储 - 简单的 fallback 方案
+支持后端：
+1. ChromaDB - 持久化向量数据库（主要）
+2. InMemoryVectorStore - 内存存储（fallback）
 """
 from typing import List, Optional, Dict, Any, Tuple
 from pydantic import BaseModel, Field
 from pathlib import Path
-import asyncio
 import logging
 import math
 
@@ -24,157 +22,11 @@ class VectorDocument(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class FAISSIndex:
-    """
-    FAISS 向量索引
-    
-    使用 FAISS 进行高效的近似最近邻搜索
-    """
-    
-    def __init__(self, dimension: int, use_gpu: bool = False):
-        self.dimension = dimension
-        self.use_gpu = use_gpu
-        self._index = None
-        self._id_to_idx: Dict[str, int] = {}
-        self._idx_to_id: Dict[int, str] = {}
-        self._documents: Dict[str, VectorDocument] = {}
-        self._next_idx = 0
-        self._initialized = False
-    
-    def _init_index(self) -> None:
-        """初始化 FAISS 索引"""
-        if self._initialized:
-            return
-        
-        try:
-            import faiss
-            
-            if self.use_gpu:
-                try:
-                    res = faiss.StandardGpuResources()
-                    self._index = faiss.GpuIndexFlatIP(res, self.dimension)
-                    logger.info(f"FAISS GPU index initialized, dimension={self.dimension}")
-                except Exception as e:
-                    logger.warning(f"FAISS GPU not available, falling back to CPU: {e}")
-                    self._index = faiss.IndexFlatIP(self.dimension)
-                    self.use_gpu = False
-            else:
-                self._index = faiss.IndexFlatIP(self.dimension)
-                logger.info(f"FAISS CPU index initialized, dimension={self.dimension}")
-            
-            self._initialized = True
-            
-        except ImportError:
-            logger.warning(
-                "faiss not installed, vector search will use brute force. "
-                "Install with: pip install faiss-cpu or faiss-gpu"
-            )
-            self._initialized = True
-    
-    def add_vectors(
-        self,
-        ids: List[str],
-        embeddings: List[List[float]],
-        documents: List[VectorDocument],
-    ) -> None:
-        """添加向量和文档"""
-        self._init_index()
-        
-        import numpy as np
-        
-        embeddings_array = np.array(embeddings, dtype=np.float32)
-        
-        if self._index is not None:
-            faiss.normalize_L2(embeddings_array)
-            self._index.add(embeddings_array)
-        
-        for i, (doc_id, doc) in enumerate(zip(ids, documents)):
-            idx = self._next_idx + i
-            self._id_to_idx[doc_id] = idx
-            self._idx_to_id[idx] = doc_id
-            doc.embedding = embeddings[i]
-            self._documents[doc_id] = doc
-        
-        self._next_idx += len(ids)
-    
-    def search(
-        self,
-        query_embedding: List[float],
-        top_k: int = 10,
-    ) -> List[Tuple[VectorDocument, float]]:
-        """搜索最相似的文档"""
-        if not self._documents:
-            return []
-        
-        import numpy as np
-        
-        query_array = np.array([query_embedding], dtype=np.float32)
-        
-        if self._index is not None and self._index.ntotal > 0:
-            faiss.normalize_L2(query_array)
-            distances, indices = self._index.search(query_array, min(top_k, self._index.ntotal))
-            
-            results = []
-            for i, idx in enumerate(indices[0]):
-                if idx == -1:
-                    continue
-                doc_id = self._idx_to_id.get(int(idx))
-                if doc_id and doc_id in self._documents:
-                    score = float(distances[0][i])
-                    results.append((self._documents[doc_id], score))
-            
-            return results
-        else:
-            results = []
-            query_norm = math.sqrt(sum(x * x for x in query_embedding))
-            
-            for doc_id, doc in self._documents.items():
-                if doc.embedding:
-                    doc_norm = math.sqrt(sum(x * x for x in doc.embedding))
-                    if query_norm > 0 and doc_norm > 0:
-                        dot = sum(a * b for a, b in zip(query_embedding, doc.embedding))
-                        similarity = dot / (query_norm * doc_norm)
-                    else:
-                        similarity = 0.0
-                    results.append((doc, similarity))
-            
-            results.sort(key=lambda x: x[1], reverse=True)
-            return results[:top_k]
-    
-    def remove(self, ids: List[str]) -> None:
-        """移除文档（FAISS 不支持直接删除，标记为删除）"""
-        for doc_id in ids:
-            if doc_id in self._id_to_idx:
-                idx = self._id_to_idx[doc_id]
-                del self._id_to_idx[doc_id]
-                del self._idx_to_id[idx]
-            if doc_id in self._documents:
-                del self._documents[doc_id]
-    
-    def count(self) -> int:
-        """返回文档数量"""
-        return len(self._documents)
-    
-    def clear(self) -> None:
-        """清空索引"""
-        self._id_to_idx.clear()
-        self._idx_to_id.clear()
-        self._documents.clear()
-        self._next_idx = 0
-        
-        if self._index is not None:
-            try:
-                import faiss
-                self._index = faiss.IndexFlatIP(self.dimension)
-            except:
-                pass
-
-
 class InMemoryVectorStore:
     """
     内存向量存储
     
-    使用余弦相似度进行搜索，作为 fallback 方案
+    使用余弦相似度进行搜索，作为 ChromaDB 的 fallback 方案
     """
     
     def __init__(self, embedding_dim: int = 768):
@@ -258,6 +110,7 @@ class ChromaVectorStore:
     ChromaDB 向量存储
     
     持久化存储，支持高效的向量检索
+    当 ChromaDB 不可用时，自动 fallback 到内存存储
     """
     
     def __init__(
@@ -408,117 +261,3 @@ class ChromaVectorStore:
             )
         elif self._fallback_store:
             await self._fallback_store.clear()
-
-
-class VectorStoreBackend:
-    """
-    向量存储后端
-    
-    统一的向量存储接口，支持多种后端
-    """
-    
-    def __init__(
-        self,
-        backend: str = "chroma",
-        collection_name: str = "default",
-        persist_directory: str = "./data/chroma",
-        embedding_dim: int = 768,
-        use_faiss: bool = False,
-    ):
-        self.backend_type = backend
-        self.collection_name = collection_name
-        self.persist_directory = persist_directory
-        self.embedding_dim = embedding_dim
-        self.use_faiss = use_faiss
-        
-        self._store: Optional[Any] = None
-        self._faiss_index: Optional[FAISSIndex] = None
-        self._initialized = False
-    
-    async def initialize(self) -> None:
-        """初始化存储后端"""
-        if self._initialized:
-            return
-        
-        if self.backend_type == "chroma":
-            self._store = ChromaVectorStore(
-                collection_name=self.collection_name,
-                persist_directory=self.persist_directory,
-                embedding_dim=self.embedding_dim,
-            )
-            await self._store.initialize()
-        elif self.backend_type == "faiss":
-            self._faiss_index = FAISSIndex(self.embedding_dim)
-            self._faiss_index._init_index()
-        elif self.backend_type == "memory":
-            self._store = InMemoryVectorStore(self.embedding_dim)
-        else:
-            logger.warning(f"Unknown backend type: {self.backend_type}, using memory")
-            self._store = InMemoryVectorStore(self.embedding_dim)
-        
-        self._initialized = True
-        logger.info(f"VectorStoreBackend initialized: {self.backend_type}")
-    
-    async def insert(
-        self,
-        documents: List[VectorDocument],
-        embeddings: List[List[float]],
-    ) -> List[str]:
-        """插入文档"""
-        await self.initialize()
-        
-        if self._faiss_index:
-            ids = [doc.id for doc in documents]
-            for doc, emb in zip(documents, embeddings):
-                doc.embedding = emb
-            self._faiss_index.add_vectors(ids, embeddings, documents)
-            return ids
-        elif self._store:
-            return await self._store.insert(documents, embeddings)
-        
-        return []
-    
-    async def search(
-        self,
-        query_embedding: List[float],
-        top_k: int = 5,
-        filter_dict: Optional[Dict] = None,
-    ) -> List[Tuple[VectorDocument, float]]:
-        """搜索文档"""
-        await self.initialize()
-        
-        if self._faiss_index:
-            return self._faiss_index.search(query_embedding, top_k)
-        elif self._store:
-            return await self._store.search(query_embedding, top_k, filter_dict)
-        
-        return []
-    
-    async def delete(self, ids: List[str]) -> None:
-        """删除文档"""
-        await self.initialize()
-        
-        if self._faiss_index:
-            self._faiss_index.remove(ids)
-        elif self._store:
-            await self._store.delete(ids)
-    
-    async def count(self) -> int:
-        """返回文档数量"""
-        await self.initialize()
-        
-        if self._faiss_index:
-            return self._faiss_index.count()
-        elif self._store:
-            return await self._store.count()
-        
-        return 0
-    
-    async def clear(self) -> None:
-        """清空存储"""
-        await self.initialize()
-        
-        if self._faiss_index:
-            self._faiss_index.clear()
-        elif self._store:
-            await self._store.clear()

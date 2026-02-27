@@ -53,6 +53,7 @@ class MainAgent:
             summary_threshold=settings.MEMORY_SUMMARY_THRESHOLD,
             keep_recent_messages=settings.MEMORY_KEEP_RECENT,
             on_summary_needed=self._generate_summary,
+            on_store_summary=self._store_summary_to_long_term,
         )
         
         self.long_term_memory = LongTermMemory(
@@ -120,6 +121,81 @@ class MainAgent:
     
     async def _generate_summary(self, messages: List) -> str:
         return await self.summarizer.summarize(messages)
+    
+    async def _store_summary_to_long_term(self, summary_content: str, message_count: int):
+        """
+        将摘要同步到长期记忆
+        
+        Args:
+            summary_content: 摘要内容
+            message_count: 被摘要的消息数量
+        """
+        try:
+            await self.long_term_memory.store(
+                content=summary_content,
+                importance=4,
+                category="summary",
+                tags=["auto_summary", f"messages_{message_count}"],
+                source_conversation_id=self.conversation_id,
+            )
+            logger.info(f"[MainAgent] Summary synced to long-term memory: {message_count} messages")
+        except Exception as e:
+            logger.warning(f"Failed to sync summary to long-term memory: {e}")
+    
+    async def load_history_from_db(
+        self,
+        db_session,
+        conversation_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> int:
+        """
+        从数据库加载历史消息到短期记忆
+        
+        Args:
+            db_session: 数据库会话
+            conversation_id: 会话 ID (默认使用实例的 conversation_id)
+            limit: 最大加载消息数量
+            
+        Returns:
+            加载的消息数量
+        """
+        from sqlalchemy import select
+        from app.langchain.models.database import Message
+        
+        conv_id = conversation_id or self.conversation_id
+        if not conv_id:
+            logger.warning("[MainAgent] No conversation_id provided, skipping history load")
+            return 0
+        
+        try:
+            result = await db_session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .order_by(Message.created_at.desc())
+                .limit(limit)
+            )
+            messages = list(reversed(result.scalars().all()))
+            
+            if not messages:
+                logger.debug(f"[MainAgent] No history messages found for conversation {conv_id}")
+                return 0
+            
+            loaded_count = 0
+            for msg in messages:
+                if msg.role == "user":
+                    self.short_term_memory.add_message(HumanMessage(content=msg.content))
+                elif msg.role == "assistant":
+                    self.short_term_memory.add_message(AIMessage(content=msg.content))
+                elif msg.role == "system":
+                    self.short_term_memory.add_message(SystemMessage(content=msg.content))
+                loaded_count += 1
+            
+            logger.info(f"[MainAgent] Loaded {loaded_count} history messages from DB for conversation {conv_id}")
+            return loaded_count
+            
+        except Exception as e:
+            logger.error(f"[MainAgent] Failed to load history from DB: {e}")
+            return 0
     
     async def _build_system_prompt(self, user_message: str) -> str:
         if self.custom_system_prompt:
@@ -235,17 +311,21 @@ class MainAgent:
         
         try:
             if hasattr(tool, "ainvoke"):
-                return await tool.ainvoke(tool_args)
+                result = await tool.ainvoke(tool_args)
             elif hasattr(tool, "invoke"):
-                return tool.invoke(tool_args)
+                result = tool.invoke(tool_args)
             elif hasattr(tool, "func"):
                 import asyncio
                 if asyncio.iscoroutinefunction(tool.func):
-                    return await tool.func(**tool_args)
+                    result = await tool.func(**tool_args)
                 else:
-                    return tool.func(**tool_args)
+                    result = tool.func(**tool_args)
             else:
                 return f"工具 '{tool_name}' 无法执行，请尝试其他方式完成任务。"
+            
+            self._record_tool_call(tool_name, tool_args, result)
+            
+            return result
         except TypeError as e:
             return f"工具 '{tool_name}' 参数错误: {str(e)}。请检查参数格式。"
         except FileNotFoundError as e:
@@ -254,6 +334,21 @@ class MainAgent:
             return f"权限错误: {str(e)}"
         except Exception as e:
             return f"执行 '{tool_name}' 时出错: {str(e)}"
+    
+    def _record_tool_call(self, tool_name: str, tool_args: dict, result: str) -> None:
+        args_str = str(tool_args)
+        if len(args_str) > 100:
+            args_str = args_str[:100] + "..."
+        
+        result_str = str(result)
+        if len(result_str) > 200:
+            result_str = result_str[:200] + "..."
+        
+        tool_summary = f"[工具调用] {tool_name}({args_str}) → {result_str}"
+        
+        self.short_term_memory.add_message(SystemMessage(content=tool_summary))
+        
+        logger.info(f"[MainAgent] Tool call recorded: {tool_name}")
     
     async def chat(
         self,
@@ -296,10 +391,7 @@ class MainAgent:
                 callback.on_llm_end(response)
                 
                 if not response.tool_calls:
-                    self.short_term_memory.add_message(HumanMessage(content=message))
-                    self.short_term_memory.add_message(AIMessage(content=response.content or ""))
-                    
-                    self._store_to_long_term_async(message, response.content or "")
+                    await self._finalize_conversation(message, response.content or "")
                     
                     self._tracer.step("completed")
                     
@@ -471,10 +563,7 @@ class MainAgent:
                 if not ai_message.tool_calls:
                     logger.info(f"[MainAgent] No tool calls, finalizing response: content_len={len(full_content)}")
                     
-                    self.short_term_memory.add_message(HumanMessage(content=message))
-                    self.short_term_memory.add_message(AIMessage(content=full_content))
-                    
-                    self._store_to_long_term_async(message, full_content)
+                    await self._finalize_conversation(message, full_content)
                     
                     self._tracer.step("completed")
                     
@@ -555,29 +644,55 @@ class MainAgent:
             await interrupt_manager.remove_session(session_id)
             logger.info(f"[MainAgent] chat_stream end: session_id={session_id}")
     
-    def _store_to_long_term_async(self, user_message: str, assistant_response: str):
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self._store_to_long_term(user_message, assistant_response))
-        except:
-            pass
+    async def _finalize_conversation(self, user_message: str, assistant_response: str):
+        self.short_term_memory.add_message(HumanMessage(content=user_message))
+        self.short_term_memory.add_message(AIMessage(content=assistant_response))
+        
+        if self.short_term_memory.needs_summary:
+            logger.info(f"[MainAgent] Summary threshold reached, triggering summary")
+            summary = await self.short_term_memory.check_and_summarize()
+            if summary:
+                logger.info(f"[MainAgent] Summary generated: {summary.token_count} tokens")
+        
+        await self._store_to_long_term(user_message, assistant_response)
     
     async def _store_to_long_term(self, user_message: str, assistant_response: str):
+        """
+        增强的长期记忆存储逻辑
+        
+        1. 去重检查 - 避免存储相似内容
+        2. 评估重要性 - 只存储重要内容
+        3. 提取关键信息 - 作为标签存储
+        4. 存储完整对话
+        """
         try:
-            importance = await self.summarizer.assess_importance(
-                f"{user_message}\n{assistant_response}"
+            content = f"用户: {user_message}\n助手: {assistant_response}"
+            
+            similar = await self.long_term_memory.retrieve(content, top_k=3)
+            if similar and similar[0][1] > 0.95:
+                logger.info("Similar memory exists, skipping storage")
+                return
+            
+            importance = await self.summarizer.assess_importance(content)
+            
+            if importance < 3:
+                logger.info(f"Memory importance too low ({importance}), skipping storage")
+                return
+            
+            key_info = await self.summarizer.extract_key_info(content)
+            
+            await self.long_term_memory.store(
+                content=content,
+                importance=importance,
+                category="conversation",
+                tags=key_info if key_info else None,
+                source_conversation_id=self.conversation_id,
             )
             
-            if importance >= 4:
-                await self.long_term_memory.store(
-                    content=f"用户: {user_message}\n助手: {assistant_response}",
-                    importance=importance,
-                    category="conversation",
-                    source_conversation_id=self.conversation_id,
-                )
+            logger.info(f"Stored to long-term memory: importance={importance}, tags={key_info}")
+            
         except Exception as e:
-            print(f"Failed to store to long-term memory: {e}")
+            logger.warning(f"Failed to store to long-term memory: {e}")
     
     def get_memory_stats(self) -> dict:
         return {

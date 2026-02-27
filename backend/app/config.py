@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     MEMORY_SUMMARY_THRESHOLD: float = 0.8
     MEMORY_KEEP_RECENT: int = 5
     
+    # Agent实例缓存配置
+    AGENT_CACHE_TTL: int = 3600
+    AGENT_CACHE_MAX_SIZE: int = 100
+    
+    # 历史消息加载配置
+    HISTORY_LOAD_ENABLED: bool = True
+    HISTORY_LOAD_LIMIT: int = 20
+    HISTORY_MAX_TOKENS: int = 4000
+    
     EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
     MODEL_HUB_PATH: str = "./model_hub"

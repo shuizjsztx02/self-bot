@@ -172,6 +172,23 @@ class SupervisorAgent:
             self._kb_router = KBRouter(db=self.db_session)
         return self._kb_router
     
+    async def load_history(self, db_session, limit: int = 20) -> int:
+        """
+        从数据库加载历史消息到 MainAgent 的短期记忆
+        
+        Args:
+            db_session: 数据库会话
+            limit: 最大加载消息数量
+            
+        Returns:
+            加载的消息数量
+        """
+        return await self.main_agent.load_history_from_db(
+            db_session=db_session,
+            conversation_id=self.conversation_id,
+            limit=limit,
+        )
+    
     async def chat(self, message: str, db=None) -> dict:
         """
         主对话入口
