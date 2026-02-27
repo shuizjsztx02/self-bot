@@ -71,15 +71,19 @@ class LongTermMemory:
         return entry
     
     async def _index_entry(self, entry: MemoryEntry) -> None:
+        metadata = {
+            "importance": entry.importance,
+            "category": entry.category,
+            "created_at": entry.created_at.isoformat(),
+        }
+        
+        if entry.tags:
+            metadata["tags"] = entry.tags
+        
         doc = VectorDocument(
             id=entry.id,
             content=entry.content,
-            metadata={
-                "importance": entry.importance,
-                "category": entry.category,
-                "tags": entry.tags,
-                "created_at": entry.created_at.isoformat(),
-            },
+            metadata=metadata,
         )
         
         embedding = await self.rag_retriever.embed_text(entry.content)

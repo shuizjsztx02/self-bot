@@ -8,6 +8,7 @@ import logging
 
 from app.langchain.llm import get_llm
 from app.knowledge_base.schemas import SearchResult, RAGSearchInput
+from app.langchain.tracing.rag_trace import get_rag_trace, trace_step
 
 logger = logging.getLogger(__name__)
 
@@ -165,40 +166,44 @@ class RagAgent:
         
         history = self._context_manager.get_history()
         
-        if self.config.enable_query_rewrite:
-            rewrite_result = await self._query_rewriter.rewrite(query, history)
-        else:
-            from app.langchain.routers.types import RewrittenQuery
-            rewrite_result = RewrittenQuery(
-                original_query=query,
-                rewritten_query=query,
-            )
+        with trace_step("query_rewrite", {"query": query, "history_len": len(history)}):
+            if self.config.enable_query_rewrite:
+                rewrite_result = await self._query_rewriter.rewrite(query, history)
+            else:
+                from app.langchain.services.rag.rag_types import RewrittenQuery
+                rewrite_result = RewrittenQuery(
+                    original_query=query,
+                    rewritten_query=query,
+                )
         
         all_queries = [rewrite_result.rewritten_query] + rewrite_result.variations
         
-        accessible_kbs = await self._permission_service.get_accessible_kbs(self.user_id)
-        
-        if not accessible_kbs:
-            return RagProcessResult.empty(query)
-        
-        if kb_ids:
-            kb_ids = [kb for kb in kb_ids if kb in accessible_kbs]
-        else:
-            kb_ids = accessible_kbs
+        if not kb_ids:
+            logger.info(f"[RagAgent] No kb_ids provided, fetching all available knowledge bases")
+            all_kbs = await self._kb_service.list_all(is_active=True)
+            kb_ids = [kb.id for kb in all_kbs]
+            logger.info(f"[RagAgent] Found {len(kb_ids)} available knowledge bases: {kb_ids}")
         
         if not kb_ids:
+            logger.warning(f"[RagAgent] No knowledge bases available for search")
             return RagProcessResult.empty(query)
         
-        all_results = await self._multi_query_search(all_queries, kb_ids, top_k)
+        with trace_step("multi_query_search", {"queries": all_queries, "kb_ids": kb_ids}):
+            all_results = await self._multi_query_search(all_queries, kb_ids, top_k)
         
-        await self._fill_metadata(all_results)
+        with trace_step("metadata_fill", {"results_count": len(all_results)}):
+            await self._fill_metadata(all_results)
         
         conversation_context = self._context_manager.get_context_for_query(query)
-        formatted_context = await self._compress_context(
-            rewrite_result.rewritten_query,
-            all_results,
-            conversation_context,
-        )
+        
+        with trace_step("context_compress", {"docs_count": len(all_results)}):
+            formatted_context = await self._compress_context(
+                rewrite_result.rewritten_query,
+                all_results,
+                conversation_context,
+            )
+        
+        logger.info(f"[RagAgent] Process complete: {len(all_results)} docs, context_len={len(formatted_context)}")
         
         return RagProcessResult(
             query=query,
@@ -216,10 +221,14 @@ class RagAgent:
         top_k: int,
     ) -> List[SearchResult]:
         """多查询检索，合并去重"""
+        logger.info(f"[RagAgent] _multi_query_search: queries={queries}, kb_ids={kb_ids}, top_k={top_k}")
+        
         all_results = []
         seen_ids = set()
         
-        for query in queries:
+        for i, query in enumerate(queries):
+            logger.info(f"[RagAgent] Searching query {i+1}/{len(queries)}: '{query[:50]}...'")
+            
             if self.config.use_hybrid:
                 results = await self._search_service.cross_hybrid_search(
                     kb_ids=kb_ids,
@@ -237,12 +246,16 @@ class RagAgent:
                     use_rerank=self.config.use_rerank,
                 )
             
+            logger.info(f"[RagAgent] Query '{query[:30]}...' found {len(results)} results")
+            
             for r in results:
                 if r.chunk_id not in seen_ids:
                     seen_ids.add(r.chunk_id)
                     all_results.append(r)
         
         all_results.sort(key=lambda x: x.score, reverse=True)
+        logger.info(f"[RagAgent] Total results: {len(all_results)} (before dedup), {len(all_results[:self.config.max_retrieved_docs])} (after dedup)")
+        
         return all_results[:self.config.max_retrieved_docs]
     
     async def _compress_context(
@@ -318,18 +331,23 @@ class RagAgent:
         top_k: int = 5,
     ):
         """流式版本的 RAG 对话"""
+        logger.info(f"[RagAgent] chat_with_rag_stream start: query='{query[:50]}...', kb_ids={kb_ids}")
         await self._get_services()
         
         history = self._context_manager.get_history()
+        logger.info(f"[RagAgent] History length: {len(history)}")
         
         if self.config.enable_query_rewrite:
+            logger.info(f"[RagAgent] Query rewrite enabled, calling rewriter")
             rewrite_result = await self._query_rewriter.rewrite(query, history)
+            logger.info(f"[RagAgent] Rewrite result: original='{query[:30]}...', rewritten='{rewrite_result.rewritten_query[:30]}...', variations={len(rewrite_result.variations)}")
         else:
-            from app.langchain.routers.types import RewrittenQuery
+            from app.langchain.services.rag.rag_types import RewrittenQuery
             rewrite_result = RewrittenQuery(
                 original_query=query,
                 rewritten_query=query,
             )
+            logger.info(f"[RagAgent] Query rewrite disabled, using original query")
         
         yield {
             "type": "rag_info",
@@ -338,9 +356,12 @@ class RagAgent:
             "entities": rewrite_result.extracted_entities,
         }
         
+        logger.info(f"[RagAgent] Calling process_query")
         process_result = await self.process_query(query, kb_ids, top_k)
+        logger.info(f"[RagAgent] process_query complete: {len(process_result.documents)} docs, context_len={len(process_result.formatted_context)}")
         
         if process_result.documents:
+            logger.info(f"[RagAgent] Yielding rag_sources with {min(len(process_result.documents), 5)} sources")
             yield {
                 "type": "rag_sources",
                 "sources": [
@@ -352,6 +373,8 @@ class RagAgent:
                     for r in process_result.documents[:5]
                 ],
             }
+        else:
+            logger.warning(f"[RagAgent] No documents found for query")
         
         self._context_manager.add_user_message(query)
         
@@ -359,6 +382,8 @@ class RagAgent:
             "type": "rag_context",
             "formatted_context": process_result.formatted_context,
         }
+        
+        logger.info(f"[RagAgent] chat_with_rag_stream complete")
     
     def add_assistant_message(self, content: str):
         """添加助手消息到上下文"""
@@ -378,23 +403,20 @@ class RagAgent:
         执行知识库检索（纯检索，不包含查询增强）
         
         职责分离：
-        - 权限检查：本方法处理
+        - 知识库获取：本方法处理（无kb_ids时获取所有可用知识库）
         - 检索逻辑：委托给 SearchService
         - 元数据填充：本方法处理
         """
         await self._get_services()
         
-        accessible_kbs = await self._permission_service.get_accessible_kbs(self.user_id)
-        
-        if not accessible_kbs:
-            return []
-        
-        if kb_ids:
-            kb_ids = [kb for kb in kb_ids if kb in accessible_kbs]
-        else:
-            kb_ids = accessible_kbs
+        if not kb_ids:
+            logger.info(f"[RagAgent.search] No kb_ids provided, fetching all available knowledge bases")
+            all_kbs = await self._kb_service.list_all(is_active=True)
+            kb_ids = [kb.id for kb in all_kbs]
+            logger.info(f"[RagAgent.search] Found {len(kb_ids)} available knowledge bases")
         
         if not kb_ids:
+            logger.warning(f"[RagAgent.search] No knowledge bases available for search")
             return []
         
         if use_hybrid and hasattr(self._search_service, 'cross_hybrid_search'):

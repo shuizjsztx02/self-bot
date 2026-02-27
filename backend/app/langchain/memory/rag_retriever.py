@@ -2,8 +2,53 @@ from typing import List, Optional, Tuple
 from pydantic import BaseModel
 import asyncio
 import logging
+import os
+
+from app.config import settings
+from app.core.device_utils import get_optimal_device, log_device_status
 
 logger = logging.getLogger(__name__)
+
+
+def get_local_model_path(model_name: str) -> Optional[str]:
+    """
+    获取本地模型路径
+    
+    HuggingFace 缓存目录结构:
+    model_hub/
+    └── models--BAAI--bge-base-zh-v1.5/
+        ├── refs/
+        │   └── main  (包含 commit hash)
+        └── snapshots/
+            └── <commit_hash>/  (实际模型文件)
+    """
+    model_hub_path = settings.MODEL_HUB_PATH
+    if not os.path.exists(model_hub_path):
+        return None
+    
+    model_dir_name = model_name.replace("/", "--")
+    model_dir = os.path.join(model_hub_path, f"models--{model_dir_name}")
+    
+    if not os.path.exists(model_dir):
+        return None
+    
+    refs_file = os.path.join(model_dir, "refs", "main")
+    if os.path.exists(refs_file):
+        with open(refs_file, "r") as f:
+            commit_hash = f.read().strip()
+        
+        snapshot_path = os.path.join(model_dir, "snapshots", commit_hash)
+        if os.path.exists(snapshot_path):
+            return snapshot_path
+    
+    snapshots_dir = os.path.join(model_dir, "snapshots")
+    if os.path.exists(snapshots_dir):
+        subdirs = [d for d in os.listdir(snapshots_dir) 
+                   if os.path.isdir(os.path.join(snapshots_dir, d))]
+        if subdirs:
+            return os.path.join(snapshots_dir, subdirs[0])
+    
+    return None
 
 
 class EmbeddingModelError(Exception):
@@ -25,9 +70,11 @@ class RAGRetriever:
         self,
         vector_store,
         config: Optional[RAGConfig] = None,
+        device: Optional[str] = None,
     ):
         self.vector_store = vector_store
         self.config = config or RAGConfig()
+        self.device = device or get_optimal_device()
         self._embedding_model = None
         self._reranker = None
         self._embedding_dim: Optional[int] = None
@@ -40,18 +87,35 @@ class RAGRetriever:
         try:
             from sentence_transformers import SentenceTransformer
             logger.info(f"Loading embedding model: {self.config.embedding_model}")
-            self._embedding_model = SentenceTransformer(
-                self.config.embedding_model,
-                trust_remote_code=True,
-            )
+            logger.info(f"Using device: {self.device}")
+            
+            local_path = get_local_model_path(self.config.embedding_model)
+            if local_path:
+                logger.info(f"Loading from local path: {local_path}")
+                self._embedding_model = SentenceTransformer(
+                    local_path,
+                    trust_remote_code=True,
+                    device=self.device,
+                )
+            else:
+                self._embedding_model = SentenceTransformer(
+                    self.config.embedding_model,
+                    trust_remote_code=True,
+                    device=self.device,
+                )
             self._embedding_dim = self._embedding_model.get_sentence_embedding_dimension()
-            logger.info(f"Embedding model loaded, dimension: {self._embedding_dim}")
+            logger.info(f"Embedding model loaded on {self.device}, dimension: {self._embedding_dim}")
         except ImportError as e:
             raise EmbeddingModelError(
                 "sentence-transformers is required for embedding. "
                 "Install with: pip install sentence-transformers"
             ) from e
         except Exception as e:
+            if "cuda" in self.device or self.device == "mps":
+                logger.warning(f"Failed to load model on {self.device}, falling back to CPU: {e}")
+                self.device = "cpu"
+                self._ensure_embedding_model()
+                return
             raise EmbeddingModelError(
                 f"Failed to load embedding model '{self.config.embedding_model}': {e}"
             ) from e
@@ -75,17 +139,34 @@ class RAGRetriever:
             try:
                 from sentence_transformers import CrossEncoder
                 logger.info(f"Loading reranker model: {self.config.reranker_model}")
-                self._reranker = CrossEncoder(
-                    self.config.reranker_model,
-                    trust_remote_code=True,
-                )
-                logger.info("Reranker model loaded successfully")
+                logger.info(f"Using device: {self.device}")
+                
+                local_path = get_local_model_path(self.config.reranker_model)
+                if local_path:
+                    logger.info(f"Loading reranker from local path: {local_path}")
+                    self._reranker = CrossEncoder(
+                        local_path,
+                        trust_remote_code=True,
+                        device=self.device,
+                    )
+                else:
+                    self._reranker = CrossEncoder(
+                        self.config.reranker_model,
+                        trust_remote_code=True,
+                        device=self.device,
+                    )
+                logger.info(f"Reranker model loaded on {self.device}")
             except ImportError:
                 logger.warning(
                     "sentence-transformers not installed for reranker, "
                     "reranking will be disabled"
                 )
             except Exception as e:
+                if "cuda" in self.device or self.device == "mps":
+                    logger.warning(f"Failed to load reranker on {self.device}, falling back to CPU: {e}")
+                    self.device = "cpu"
+                    self._reranker = None
+                    return self.reranker
                 logger.warning(f"Failed to load reranker model: {e}")
         return self._reranker
     

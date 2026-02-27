@@ -6,6 +6,7 @@ from langchain_core.output_parsers import StrOutputParser
 from typing import Optional, AsyncIterator, List, Dict, Any
 from pathlib import Path
 import uuid
+import logging
 
 from app.langchain.llm import get_llm
 from app.langchain.tools import get_all_tools, get_all_tools_with_mcp
@@ -19,6 +20,9 @@ from app.langchain.agents.stream_interrupt import (
     StreamInterruptedException,
     get_stream_interrupt_manager
 )
+from app.langchain.tracing.rag_trace import get_rag_trace, trace_step
+
+logger = logging.getLogger(__name__)
 
 
 class MainAgent:
@@ -359,17 +363,22 @@ class MainAgent:
         
         await interrupt_manager.create_session(session_id, self.conversation_id)
         
+        logger.info(f"[MainAgent] chat_stream start: message_len={len(message)}, session_id={session_id}")
+        
         try:
-            self._tracer.step("load_mcp_tools")
-            await self._get_tools_with_mcp()
+            with trace_step("load_mcp_tools", {"message_len": len(message)}):
+                await self._get_tools_with_mcp()
+            logger.info(f"[MainAgent] Loaded {len(self.tools)} tools")
             
-            self._tracer.step("build_system_prompt")
-            system_prompt = await self._build_system_prompt(message)
+            with trace_step("build_system_prompt", {"conversation_id": self.conversation_id}):
+                system_prompt = await self._build_system_prompt(message)
+            logger.info(f"[MainAgent] System prompt built: len={len(system_prompt)}")
             
-            self._tracer.step("build_context")
-            self._messages = [SystemMessage(content=system_prompt)]
-            self._messages.extend(self._get_chat_history())
-            self._messages.append(HumanMessage(content=message))
+            with trace_step("build_context", {"history_turns": len(self._get_chat_history())}):
+                self._messages = [SystemMessage(content=system_prompt)]
+                self._messages.extend(self._get_chat_history())
+                self._messages.append(HumanMessage(content=message))
+            logger.info(f"[MainAgent] Context built: total_messages={len(self._messages)}")
             
             llm_with_tools = self.llm.bind_tools(self.tools)
             
@@ -378,6 +387,8 @@ class MainAgent:
             self._tracer.step("agent_streaming")
             
             for iteration in range(max_iterations):
+                logger.info(f"[MainAgent] Starting iteration {iteration + 1}/{max_iterations}")
+                
                 if await interrupt_manager.is_interrupted(session_id):
                     yield {
                         "type": "interrupted",
@@ -390,50 +401,51 @@ class MainAgent:
                 tool_calls_chunks = {}
                 tool_calls_by_index = {}
                 
-                async for chunk in llm_with_tools.astream(
-                    self._messages,
-                    config={"callbacks": [callback]},
-                ):
-                    if await interrupt_manager.is_interrupted(session_id):
-                        yield {
-                            "type": "interrupted",
-                            "content": full_content,
-                            "message": "用户中断了输出",
-                        }
-                        return
-                    
-                    if chunk.content:
-                        iteration_content += chunk.content
-                        full_content += chunk.content
-                        yield {
-                            "type": "content",
-                            "content": chunk.content,
-                        }
-                    
-                    if hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
-                        for tc_chunk in chunk.tool_call_chunks:
-                            tc_index = tc_chunk.get("index", 0)
-                            tc_id = tc_chunk.get("id")
-                            
-                            if tc_index not in tool_calls_by_index:
-                                tool_calls_by_index[tc_index] = {
-                                    "id": tc_id or "",
-                                    "name": "",
-                                    "args": "",
-                                }
-                            
-                            if tc_id:
-                                tool_calls_by_index[tc_index]["id"] = tc_id
-                            
-                            if tc_chunk.get("name"):
-                                tool_calls_by_index[tc_index]["name"] += tc_chunk["name"]
-                            
-                            if tc_chunk.get("args"):
-                                args_str = tc_chunk["args"]
-                                if isinstance(args_str, str):
-                                    tool_calls_by_index[tc_index]["args"] += args_str
-                                else:
-                                    tool_calls_by_index[tc_index]["args"] += str(args_str)
+                with trace_step("llm_stream", {"iteration": iteration + 1}):
+                    async for chunk in llm_with_tools.astream(
+                        self._messages,
+                        config={"callbacks": [callback]},
+                    ):
+                        if await interrupt_manager.is_interrupted(session_id):
+                            yield {
+                                "type": "interrupted",
+                                "content": full_content,
+                                "message": "用户中断了输出",
+                            }
+                            return
+                        
+                        if chunk.content:
+                            iteration_content += chunk.content
+                            full_content += chunk.content
+                            yield {
+                                "type": "content",
+                                "content": chunk.content,
+                            }
+                        
+                        if hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
+                            for tc_chunk in chunk.tool_call_chunks:
+                                tc_index = tc_chunk.get("index", 0)
+                                tc_id = tc_chunk.get("id")
+                                
+                                if tc_index not in tool_calls_by_index:
+                                    tool_calls_by_index[tc_index] = {
+                                        "id": tc_id or "",
+                                        "name": "",
+                                        "args": "",
+                                    }
+                                
+                                if tc_id:
+                                    tool_calls_by_index[tc_index]["id"] = tc_id
+                                
+                                if tc_chunk.get("name"):
+                                    tool_calls_by_index[tc_index]["name"] += tc_chunk["name"]
+                                
+                                if tc_chunk.get("args"):
+                                    args_str = tc_chunk["args"]
+                                    if isinstance(args_str, str):
+                                        tool_calls_by_index[tc_index]["args"] += args_str
+                                    else:
+                                        tool_calls_by_index[tc_index]["args"] += str(args_str)
                 
                 ai_message = AIMessage(content=iteration_content)
                 
@@ -457,6 +469,8 @@ class MainAgent:
                 self._messages.append(ai_message)
                 
                 if not ai_message.tool_calls:
+                    logger.info(f"[MainAgent] No tool calls, finalizing response: content_len={len(full_content)}")
+                    
                     self.short_term_memory.add_message(HumanMessage(content=message))
                     self.short_term_memory.add_message(AIMessage(content=full_content))
                     
@@ -471,6 +485,8 @@ class MainAgent:
                     }
                     return
                 
+                logger.info(f"[MainAgent] Tool calls detected: {[tc['name'] for tc in ai_message.tool_calls]}")
+                
                 for tool_call in ai_message.tool_calls:
                     if await interrupt_manager.is_interrupted(session_id):
                         yield {
@@ -484,6 +500,8 @@ class MainAgent:
                     tool_args = tool_call["args"]
                     tool_id = tool_call.get("id", "")
                     
+                    logger.info(f"[MainAgent] Executing tool: {tool_name}, args={str(tool_args)[:100]}")
+                    
                     yield {
                         "type": "tool_call",
                         "name": tool_name,
@@ -492,7 +510,10 @@ class MainAgent:
                     
                     callback.on_tool_start({"name": tool_name}, str(tool_args))
                     
-                    result = await self._execute_tool(tool_name, tool_args)
+                    with trace_step("tool_execution", {"tool_name": tool_name, "args": str(tool_args)[:100]}):
+                        result = await self._execute_tool(tool_name, tool_args)
+                    
+                    logger.info(f"[MainAgent] Tool result: {tool_name} -> {str(result)[:200]}...")
                     
                     callback.on_tool_end(result, name=tool_name)
                     
@@ -507,6 +528,7 @@ class MainAgent:
                         tool_call_id=tool_id,
                     ))
             
+            logger.warning(f"[MainAgent] Max iterations reached: {max_iterations}")
             self._tracer.step("max_iterations_reached")
             
             yield {
@@ -516,12 +538,14 @@ class MainAgent:
             }
             
         except StreamInterruptedException as e:
+            logger.warning(f"[MainAgent] Stream interrupted: {e}")
             yield {
                 "type": "interrupted",
                 "content": full_content,
                 "message": str(e),
             }
         except Exception as e:
+            logger.error(f"[MainAgent] Error in chat_stream: {e}")
             self._tracer.error(e)
             yield {
                 "type": "error",
@@ -529,6 +553,7 @@ class MainAgent:
             }
         finally:
             await interrupt_manager.remove_session(session_id)
+            logger.info(f"[MainAgent] chat_stream end: session_id={session_id}")
     
     def _store_to_long_term_async(self, user_message: str, assistant_response: str):
         import asyncio

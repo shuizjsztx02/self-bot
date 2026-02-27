@@ -13,6 +13,8 @@ env/
 backend/data/
 backend/docs/
 backend/workspace/
+backend/tests/
+backend/model_hub/
 
 # Node
 node_modules/

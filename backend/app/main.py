@@ -14,6 +14,11 @@ logging.basicConfig(
     ]
 )
 
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.dialects").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.orm").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI
@@ -31,6 +36,7 @@ from app.knowledge_base.routes import (
     operation_logs_router,
     attribute_rules_router,
 )
+from app.core.device_utils import log_device_status
 
 
 def setup_langsmith():
@@ -61,6 +67,8 @@ async def preload_mcp_tools():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log_device_status()
+    
     await init_db()
     
     if settings.PRELOAD_MCP_TOOLS:

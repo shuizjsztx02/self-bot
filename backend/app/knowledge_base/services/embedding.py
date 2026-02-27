@@ -1,8 +1,51 @@
 from typing import List, Optional
 from collections import OrderedDict
 import asyncio
+import os
 
 from app.config import settings
+from app.core.device_utils import get_optimal_device
+
+
+def get_local_model_path(model_name: str) -> Optional[str]:
+    """
+    获取本地模型路径
+    
+    HuggingFace 缓存目录结构:
+    model_hub/
+    └── models--BAAI--bge-base-zh-v1.5/
+        ├── refs/
+        │   └── main  (包含 commit hash)
+        └── snapshots/
+            └── <commit_hash>/  (实际模型文件)
+    """
+    model_hub_path = settings.MODEL_HUB_PATH
+    if not os.path.exists(model_hub_path):
+        return None
+    
+    model_dir_name = model_name.replace("/", "--")
+    model_dir = os.path.join(model_hub_path, f"models--{model_dir_name}")
+    
+    if not os.path.exists(model_dir):
+        return None
+    
+    refs_file = os.path.join(model_dir, "refs", "main")
+    if os.path.exists(refs_file):
+        with open(refs_file, "r") as f:
+            commit_hash = f.read().strip()
+        
+        snapshot_path = os.path.join(model_dir, "snapshots", commit_hash)
+        if os.path.exists(snapshot_path):
+            return snapshot_path
+    
+    snapshots_dir = os.path.join(model_dir, "snapshots")
+    if os.path.exists(snapshots_dir):
+        subdirs = [d for d in os.listdir(snapshots_dir) 
+                   if os.path.isdir(os.path.join(snapshots_dir, d))]
+        if subdirs:
+            return os.path.join(snapshots_dir, subdirs[0])
+    
+    return None
 
 
 class LRUCache:
@@ -43,10 +86,12 @@ class EmbeddingService:
         model_name: str = None,
         cache_enabled: bool = True,
         cache_max_size: int = 1000,
+        device: Optional[str] = None,
     ):
         self.model_name = model_name or settings.EMBEDDING_MODEL
         self.cache_enabled = cache_enabled
         self.cache_max_size = cache_max_size
+        self.device = device or get_optimal_device()
         self._model = None
         self._cache = LRUCache(max_size=cache_max_size) if cache_enabled else None
     
@@ -55,12 +100,36 @@ class EmbeddingService:
         if self._model is None:
             try:
                 from sentence_transformers import SentenceTransformer
-                self._model = SentenceTransformer(
-                    self.model_name,
-                    trust_remote_code=True,
-                )
+                
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Loading embedding model: {self.model_name}")
+                logger.info(f"Using device: {self.device}")
+                
+                local_path = get_local_model_path(self.model_name)
+                if local_path:
+                    self._model = SentenceTransformer(
+                        local_path,
+                        trust_remote_code=True,
+                        device=self.device,
+                    )
+                else:
+                    self._model = SentenceTransformer(
+                        self.model_name,
+                        trust_remote_code=True,
+                        device=self.device,
+                    )
+                logger.info(f"Embedding model loaded on {self.device}")
             except ImportError:
                 raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
+            except Exception as e:
+                if "cuda" in self.device or self.device == "mps":
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Failed to load model on {self.device}, falling back to CPU: {e}")
+                    self.device = "cpu"
+                    return self.model
+                raise
         return self._model
     
     def _get_cache_key(self, text: str) -> str:

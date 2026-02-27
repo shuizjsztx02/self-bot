@@ -5,23 +5,13 @@ import json
 import aiofiles
 import shutil
 from app.config import settings
-
-
-def resolve_path(path: str) -> str:
-    if os.path.isabs(path):
-        return path
-    
-    if path.startswith("./") or path.startswith("../"):
-        return os.path.abspath(path)
-    
-    workspace = settings.WORKSPACE_PATH
-    if not os.path.isabs(workspace):
-        from pathlib import Path
-        workspace = str(Path(__file__).parent.parent.parent.parent / workspace)
-    
-    os.makedirs(workspace, exist_ok=True)
-    
-    return os.path.join(workspace, path)
+from app.core.file_permission import (
+    check_path_permission,
+    resolve_path_with_permission,
+    get_allowed_directories,
+    get_denied_directories,
+    get_permission_info,
+)
 
 
 class FilePathInput(BaseModel):
@@ -58,7 +48,10 @@ class ReadFileInput(BaseModel):
 async def read_file(path: str, lines: int = 100) -> str:
     """读取本地文件内容"""
     try:
-        resolved_path = resolve_path(path)
+        resolved_path, error = resolve_path_with_permission(path)
+        if error:
+            return f"错误: {error}"
+        
         async with aiofiles.open(resolved_path, "r", encoding="utf-8") as f:
             content = await f.read()
             content_lines = content.split("\n")[:lines]
@@ -75,7 +68,10 @@ async def read_file(path: str, lines: int = 100) -> str:
 async def write_file(path: str, content: str, mode: str = "write") -> str:
     """写入内容到文件，如果文件不存在则创建。相对路径将保存到 workspace 目录"""
     try:
-        resolved_path = resolve_path(path)
+        resolved_path, error = resolve_path_with_permission(path)
+        if error:
+            return f"错误: {error}"
+        
         dir_path = os.path.dirname(resolved_path)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
@@ -93,9 +89,11 @@ async def list_directory(path: str = "", show_hidden: bool = False) -> str:
     """列出目录内容，默认列出 workspace 目录"""
     try:
         if path:
-            resolved_path = resolve_path(path)
+            resolved_path, error = resolve_path_with_permission(path)
+            if error:
+                return f"错误: {error}"
         else:
-            resolved_path = resolve_path("")
+            resolved_path, _ = resolve_path_with_permission("")
         
         if not os.path.exists(resolved_path):
             return f"错误: 目录不存在: {resolved_path}"
@@ -123,7 +121,10 @@ async def list_directory(path: str = "", show_hidden: bool = False) -> str:
 async def delete_file(path: str, force: bool = False) -> str:
     """删除文件或空目录"""
     try:
-        resolved_path = resolve_path(path)
+        resolved_path, error = resolve_path_with_permission(path)
+        if error:
+            return f"错误: {error}"
+        
         if not os.path.exists(resolved_path):
             return f"错误: 路径不存在: {resolved_path}"
         
@@ -146,8 +147,13 @@ async def delete_file(path: str, force: bool = False) -> str:
 async def copy_file(source: str, destination: str) -> str:
     """复制文件或目录"""
     try:
-        resolved_source = resolve_path(source)
-        resolved_dest = resolve_path(destination)
+        resolved_source, error = resolve_path_with_permission(source)
+        if error:
+            return f"错误 (源路径): {error}"
+        
+        resolved_dest, error = resolve_path_with_permission(destination)
+        if error:
+            return f"错误 (目标路径): {error}"
         
         if not os.path.exists(resolved_source):
             return f"错误: 源路径不存在: {resolved_source}"
@@ -169,8 +175,13 @@ async def copy_file(source: str, destination: str) -> str:
 async def move_file(source: str, destination: str) -> str:
     """移动或重命名文件/目录"""
     try:
-        resolved_source = resolve_path(source)
-        resolved_dest = resolve_path(destination)
+        resolved_source, error = resolve_path_with_permission(source)
+        if error:
+            return f"错误 (源路径): {error}"
+        
+        resolved_dest, error = resolve_path_with_permission(destination)
+        if error:
+            return f"错误 (目标路径): {error}"
         
         if not os.path.exists(resolved_source):
             return f"错误: 源路径不存在: {resolved_source}"
@@ -183,3 +194,29 @@ async def move_file(source: str, destination: str) -> str:
         return f"已移动: {resolved_source} -> {resolved_dest}"
     except Exception as e:
         return f"移动错误: {str(e)}"
+
+
+@tool
+async def check_file_permission(path: str = "") -> str:
+    """
+    检查文件访问权限配置
+    
+    Args:
+        path: 可选，检查特定路径的权限。为空则显示所有权限配置
+    
+    Returns:
+        权限配置信息
+    """
+    result = get_permission_info()
+    
+    if path:
+        allowed, reason = check_path_permission(path)
+        resolved, _ = resolve_path_with_permission(path)
+        result["checked_path"] = {
+            "input": path,
+            "resolved": resolved,
+            "allowed": allowed,
+            "reason": reason,
+        }
+    
+    return json.dumps(result, indent=2, ensure_ascii=False)

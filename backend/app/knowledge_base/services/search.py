@@ -6,12 +6,13 @@ import os
 
 from ..schemas import SearchResult
 from ..vector_store import VectorStoreBackend
-from .embedding import EmbeddingService
+from .embedding import EmbeddingService, get_local_model_path
 from .bm25 import BM25Index, BM25Document, HybridSearchResult
 from .attribution import SourceAttribution, RAGResponse, SourceReference
 from .compression import ContextCompressor, CompressionConfig, CompressedDocument
 from ..models import KnowledgeBase, Document
 from app.config import settings
+from app.core.device_utils import get_optimal_device
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,11 +29,13 @@ class SearchService:
         reranker_model: str = "BAAI/bge-reranker-base",
         bm25_persist_path: str = None,
         compression_config: Optional[CompressionConfig] = None,
+        device: Optional[str] = None,
     ):
         self.vector_store = vector_store
         self.embedding_service = embedding_service
         self.reranker_model = reranker_model
         self.bm25_persist_path = bm25_persist_path or settings.KB_INDEX_PATH
+        self.device = device or get_optimal_device()
         self._reranker = None
         self._bm25_indexes: Dict[str, BM25Index] = {}
         
@@ -49,12 +52,33 @@ class SearchService:
         if self._reranker is None:
             try:
                 from sentence_transformers import CrossEncoder
-                self._reranker = CrossEncoder(
-                    self.reranker_model,
-                    trust_remote_code=True,
-                )
+                
+                logger.info(f"Loading reranker model: {self.reranker_model}")
+                logger.info(f"Using device: {self.device}")
+                
+                local_path = get_local_model_path(self.reranker_model)
+                if local_path:
+                    self._reranker = CrossEncoder(
+                        local_path,
+                        trust_remote_code=True,
+                        device=self.device,
+                    )
+                else:
+                    self._reranker = CrossEncoder(
+                        self.reranker_model,
+                        trust_remote_code=True,
+                        device=self.device,
+                    )
+                logger.info(f"Reranker model loaded on {self.device}")
             except ImportError:
-                pass
+                logger.warning("sentence-transformers not installed for reranker")
+            except Exception as e:
+                if "cuda" in self.device or self.device == "mps":
+                    logger.warning(f"Failed to load reranker on {self.device}, falling back to CPU: {e}")
+                    self.device = "cpu"
+                    self._reranker = None
+                    return self.reranker
+                logger.warning(f"Failed to load reranker model: {e}")
         return self._reranker
     
     async def search(

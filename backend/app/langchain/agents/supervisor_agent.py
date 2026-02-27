@@ -15,6 +15,12 @@ from app.langchain.agents.stream_interrupt import (
     StreamInterruptManager,
     get_stream_interrupt_manager
 )
+from app.langchain.tracing.rag_trace import (
+    start_rag_trace,
+    end_rag_trace,
+    get_rag_trace,
+    trace_step,
+)
 
 
 class RouteResult(BaseModel):
@@ -156,7 +162,7 @@ class SupervisorAgent:
             db_session=db_session,
         )
         
-        self.intent_classifier = IntentClassifier(llm=self.llm)
+        self.intent_classifier = IntentClassifier(llm=self.llm, db_session=db_session)
         self.result_selector = ResultSelector(llm=self.llm)
         self._kb_router = None
     
@@ -177,6 +183,7 @@ class SupervisorAgent:
         
         self.db_session = db
         self.rag_agent.db_session = db
+        self.intent_classifier.db_session = db
         
         intent_result = await self.intent_classifier.classify_with_alternatives(message)
         
@@ -391,6 +398,17 @@ class SupervisorAgent:
         """
         kb_ids = intent_result.kb_hints
         
+        if kb_ids and self.kb_router:
+            from app.knowledge_base.services.permission import PermissionService
+            permission_service = PermissionService(self.db_session)
+            kb_ids = await self.kb_router.route(
+                query=message,
+                user_id=self.user_id,
+                permission_service=permission_service,
+                kb_hints=kb_ids,
+            )
+            logging.info(f"[SupervisorAgent] KBRouter resolved kb_ids: {kb_ids}")
+        
         rag_result = await self.rag_agent.chat_with_rag(
             query=message,
             kb_ids=kb_ids,
@@ -470,6 +488,11 @@ class SupervisorAgent:
         
         self.db_session = db
         self.rag_agent.db_session = db
+        self.intent_classifier.db_session = db
+        
+        start_rag_trace(message)
+        
+        logging.info(f"[SupervisorAgent] chat_stream start: message='{message[:50]}...'")
         
         if session_id is None:
             session_id = str(uuid.uuid4())
@@ -479,6 +502,9 @@ class SupervisorAgent:
         intent_result = await self.intent_classifier.classify_with_alternatives(message)
         
         routes = self._decide_routes(intent_result)
+        
+        logging.info(f"[SupervisorAgent] Intent: {intent_result.intent.value}, Confidence: {intent_result.confidence}")
+        logging.info(f"[SupervisorAgent] Routes: {routes}")
         
         if len(routes) > 1:
             async for chunk in self._parallel_route_stream(message, intent_result, routes, db, session_id):
@@ -496,8 +522,10 @@ class SupervisorAgent:
         session_id: Optional[str] = None,
     ):
         """单路由流式执行"""
+        logging.info(f"[SupervisorAgent] Executing route: {route}")
         
         if route == "rag_first":
+            logging.info(f"[SupervisorAgent] Calling RagAgent.chat_with_rag_stream()")
             async for chunk in self._rag_enhanced_chat_stream(message, intent_result, db, session_id):
                 yield chunk
         elif route == "research_first":
@@ -548,34 +576,66 @@ class SupervisorAgent:
         """
         kb_ids = intent_result.kb_hints
         
-        formatted_context = None
-        async for event in self.rag_agent.chat_with_rag_stream(
-            query=message,
-            kb_ids=kb_ids,
-            top_k=5,
-        ):
-            if event["type"] == "rag_context":
-                formatted_context = event["formatted_context"]
-            else:
-                yield event
+        if kb_ids and self.kb_router:
+            from app.knowledge_base.services.permission import PermissionService
+            permission_service = PermissionService(self.db_session)
+            kb_ids = await self.kb_router.route(
+                query=message,
+                user_id=self.user_id,
+                permission_service=permission_service,
+                kb_hints=kb_ids,
+            )
+            logging.info(f"[SupervisorAgent] KBRouter resolved kb_ids: {kb_ids}")
+        
+        with trace_step("rag_agent_retrieval", {"query": message, "kb_hints": kb_ids}):
+            formatted_context = None
+            async for event in self.rag_agent.chat_with_rag_stream(
+                query=message,
+                kb_ids=kb_ids,
+                top_k=5,
+            ):
+                if event["type"] == "rag_context":
+                    formatted_context = event["formatted_context"]
+                else:
+                    yield event
+        
+        logging.info(f"[SupervisorAgent] RAG formatted_context length: {len(formatted_context) if formatted_context else 0}")
+        logging.info(f"[SupervisorAgent] RAG formatted_context preview: {formatted_context[:500] if formatted_context else 'None'}...")
         
         if formatted_context:
             enhanced_message = f"{formatted_context}\n\n用户问题：{message}"
         else:
             enhanced_message = message
         
-        async for chunk in self.main_agent.chat_stream(enhanced_message, db=db, session_id=session_id):
-            yield chunk
+        logging.info(f"[SupervisorAgent] Enhanced message length: {len(enhanced_message)}")
+        logging.info(f"[SupervisorAgent] Enhanced message preview: {enhanced_message[:800]}...")
+        
+        with trace_step("main_agent_generation", {
+            "enhanced_message_len": len(enhanced_message),
+            "has_context": formatted_context is not None,
+            "context_len": len(formatted_context) if formatted_context else 0,
+        }):
+            async for chunk in self.main_agent.chat_stream(enhanced_message, db=db, session_id=session_id):
+                yield chunk
     
     async def _research_enhanced_chat_stream(self, message: str, db=None, session_id: Optional[str] = None):
         """
         搜索增强流式对话
         """
-        research_result = await self.researcher_agent.research(message)
+        with trace_step("research_agent_search", {"query": message}):
+            research_result = await self.researcher_agent.research(message)
+        
+        logging.info(f"[SupervisorAgent] Research result length: {len(research_result) if research_result else 0}")
+        logging.info(f"[SupervisorAgent] Research result preview: {research_result[:500] if research_result else 'None'}...")
+        
         enhanced_message = f"{message}\n\n[搜索结果]\n{research_result}"
         
-        async for chunk in self.main_agent.chat_stream(enhanced_message, db=db, session_id=session_id):
-            yield chunk
+        with trace_step("main_agent_generation", {
+            "enhanced_message_len": len(enhanced_message),
+            "has_research": bool(research_result),
+        }):
+            async for chunk in self.main_agent.chat_stream(enhanced_message, db=db, session_id=session_id):
+                yield chunk
     
     async def _tool_enhanced_chat_stream(self, message: str, db=None, session_id: Optional[str] = None):
         """
@@ -584,12 +644,24 @@ class SupervisorAgent:
         tool_hint = "\n\n提示：此任务可能需要使用文档操作工具（如创建Word/Excel/PPT文档）或数据分析工具。"
         enhanced_message = f"{message}{tool_hint}"
         
-        async for chunk in self.main_agent.chat_stream(enhanced_message, db=db, session_id=session_id):
-            yield chunk
+        logging.info(f"[SupervisorAgent] Tool-enhanced message length: {len(enhanced_message)}")
+        
+        with trace_step("main_agent_generation", {
+            "enhanced_message_len": len(enhanced_message),
+            "route_type": "tool_first",
+        }):
+            async for chunk in self.main_agent.chat_stream(enhanced_message, db=db, session_id=session_id):
+                yield chunk
     
     async def _direct_chat_stream(self, message: str, db=None, session_id: Optional[str] = None):
         """
         直接流式对话
         """
-        async for chunk in self.main_agent.chat_stream(message, db=db, session_id=session_id):
-            yield chunk
+        logging.info(f"[SupervisorAgent] Direct chat message length: {len(message)}")
+        
+        with trace_step("main_agent_generation", {
+            "message_len": len(message),
+            "route_type": "direct",
+        }):
+            async for chunk in self.main_agent.chat_stream(message, db=db, session_id=session_id):
+                yield chunk

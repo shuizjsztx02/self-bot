@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     
     WORKSPACE_PATH: str = "./workspace"
     
+    FILE_ACCESS_ALLOWED_DIRS: list = ["./workspace"]
+    FILE_ACCESS_DENIED_DIRS: list = []
+    FILE_ACCESS_STRICT_MODE: bool = True
+    
     # 知识库存储路径
     KB_DOCUMENT_PATH: str = "./data/knowledge_base/documents"
     KB_VECTOR_PATH: str = "./data/knowledge_base/vectors"
@@ -67,6 +71,10 @@ class Settings(BaseSettings):
     
     EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
+    MODEL_HUB_PATH: str = "./model_hub"
+    
+    MODEL_DEVICE: str = "auto"
+    MODEL_FORCE_CPU: bool = False
     
     LANGSMITH_API_KEY: Optional[str] = None
     LANGSMITH_PROJECT: str = "self-bot"

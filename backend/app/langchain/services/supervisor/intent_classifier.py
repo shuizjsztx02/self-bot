@@ -3,9 +3,12 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 import re
 import time
+import logging
 from collections import defaultdict
 
 from langchain_openai import ChatOpenAI
+
+logger = logging.getLogger(__name__)
 
 
 class QueryIntent(str, Enum):
@@ -98,7 +101,7 @@ class IntentClassifier:
     
     SEARCH_PATTERNS = [
         r"搜索|查一下|找一下|搜一下",
-        r"最新|最近|今天.*新闻",
+        r"最新|最近|新闻",
         r"新闻|热点|事件",
         r"什么是|什么是.*意思",
         r"如何.*设置|如何.*安装",
@@ -135,7 +138,7 @@ class IntentClassifier:
         r"计算.*平均值|计算.*总和",
     ]
     
-    KB_KEYWORDS = {
+    DEFAULT_KB_KEYWORDS = {
         "财务": ["财务知识库"],
         "报销": ["财务知识库"],
         "预算": ["财务知识库"],
@@ -152,27 +155,121 @@ class IntentClassifier:
         "方案": ["项目文档库"],
     }
     
-    def __init__(self, llm: ChatOpenAI):
+    KB_CACHE_TTL = 300
+    
+    def __init__(self, llm: ChatOpenAI, db_session=None):
         self.llm = llm
         self.dynamic_threshold = DynamicThreshold()
+        self.db_session = db_session
+        self._kb_keywords_cache = None
+        self._kb_keywords_last_refresh = 0
+    
+    async def _ensure_kb_keywords(self):
+        """确保知识库关键词已加载（带缓存过期检查）"""
+        current_time = time.time()
+        cache_expired = (
+            self._kb_keywords_cache is None or
+            (current_time - self._kb_keywords_last_refresh) > self.KB_CACHE_TTL
+        )
+        
+        if cache_expired:
+            if self._kb_keywords_cache is None:
+                logger.info("[IntentClassifier] KB keywords cache not initialized, refreshing...")
+            else:
+                logger.info(f"[IntentClassifier] KB keywords cache expired (TTL={self.KB_CACHE_TTL}s), refreshing...")
+            await self.refresh_kb_keywords()
+        
+        return self._kb_keywords_cache or self.DEFAULT_KB_KEYWORDS
+    
+    async def refresh_kb_keywords(self, force: bool = False):
+        """
+        从数据库刷新知识库关键词映射
+        
+        Args:
+            force: 是否强制刷新（忽略缓存）
+        """
+        if not self.db_session:
+            logger.info("[IntentClassifier] No db_session provided, using default KB_KEYWORDS")
+            self._kb_keywords_cache = self.DEFAULT_KB_KEYWORDS.copy()
+            return
+        
+        try:
+            from sqlalchemy import select
+            from app.knowledge_base.models import KnowledgeBase
+            
+            result = await self.db_session.execute(
+                select(KnowledgeBase.id, KnowledgeBase.name)
+                .where(KnowledgeBase.is_active == True)
+            )
+            kbs = result.all()
+            
+            self._kb_keywords_cache = {}
+            
+            for kb_id, kb_name in kbs:
+                keywords = self._extract_keywords_from_name(kb_name)
+                for keyword in keywords:
+                    if keyword not in self._kb_keywords_cache:
+                        self._kb_keywords_cache[keyword] = []
+                    self._kb_keywords_cache[keyword].append(kb_name)
+            
+            self._kb_keywords_last_refresh = time.time()
+            logger.info(f"[IntentClassifier] Refreshed KB keywords: {len(self._kb_keywords_cache)} keywords from {len(kbs)} knowledge bases")
+            logger.debug(f"[IntentClassifier] KB keywords mapping: {self._kb_keywords_cache}")
+            
+        except Exception as e:
+            logger.warning(f"[IntentClassifier] Failed to refresh KB keywords: {e}, using defaults")
+            self._kb_keywords_cache = self.DEFAULT_KB_KEYWORDS.copy()
+    
+    def _extract_keywords_from_name(self, name: str) -> List[str]:
+        """从知识库名称中提取关键词"""
+        keywords = []
+        
+        common_suffixes = ["知识库", "文档库", "资料库", "库", "文档", "资料"]
+        cleaned_name = name
+        for suffix in common_suffixes:
+            cleaned_name = cleaned_name.replace(suffix, "")
+        
+        if cleaned_name and len(cleaned_name) >= 2:
+            keywords.append(cleaned_name)
+        
+        import re
+        chinese_words = re.findall(r'[\u4e00-\u9fa5]+', name)
+        for word in chinese_words:
+            if len(word) >= 2:
+                keywords.append(word)
+        
+        return list(set(keywords))
     
     async def classify(self, query: str) -> IntentResult:
         """
         分类用户意图
         """
+        logger.info(f"[IntentClassifier] Classifying: '{query[:50]}...'")
+        
         rule_result = self._rule_filter(query)
         if rule_result:
             threshold = self.dynamic_threshold.get_threshold(rule_result.intent)
             if rule_result.confidence >= threshold:
+                logger.info(f"[IntentClassifier] Rule matched: {rule_result.intent.value}, confidence={rule_result.confidence:.2f}, reasoning={rule_result.reasoning}")
+                
+                if rule_result.intent == QueryIntent.KB_QUERY and not rule_result.kb_hints:
+                    keyword_result = await self._keyword_match(query)
+                    if keyword_result and keyword_result.kb_hints:
+                        rule_result.kb_hints = keyword_result.kb_hints
+                        logger.info(f"[IntentClassifier] Enriched kb_hints from keyword match: {rule_result.kb_hints}")
+                
                 return rule_result
         
-        keyword_result = self._keyword_match(query)
+        keyword_result = await self._keyword_match(query)
         if keyword_result:
             threshold = self.dynamic_threshold.get_threshold(keyword_result.intent)
             if keyword_result.confidence >= threshold:
+                logger.info(f"[IntentClassifier] Keyword matched: {keyword_result.intent.value}, confidence={keyword_result.confidence:.2f}, kb_hints={keyword_result.kb_hints}")
                 return keyword_result
         
+        logger.info(f"[IntentClassifier] No rule/keyword match, using LLM classification")
         llm_result = await self._llm_classify(query)
+        logger.info(f"[IntentClassifier] LLM result: {llm_result.intent.value}, confidence={llm_result.confidence:.2f}")
         
         return llm_result
     
@@ -204,7 +301,7 @@ class IntentClassifier:
                 "route": self._intent_to_route(rule_result.intent),
             })
         
-        keyword_result = self._keyword_match(query)
+        keyword_result = await self._keyword_match(query)
         if keyword_result and keyword_result.intent != primary.intent:
             alternatives.append({
                 "intent": keyword_result.intent.value,
@@ -257,14 +354,6 @@ class IntentClassifier:
                     reasoning=f"匹配代码模式: {pattern}",
                 )
         
-        for pattern in self.SEARCH_PATTERNS:
-            if re.search(pattern, query, re.IGNORECASE):
-                return IntentResult(
-                    intent=QueryIntent.SEARCH_TASK,
-                    confidence=0.90,
-                    reasoning=f"匹配搜索模式: {pattern}",
-                )
-        
         for pattern in self.KB_PATTERNS:
             if re.search(pattern, query, re.IGNORECASE):
                 return IntentResult(
@@ -273,13 +362,22 @@ class IntentClassifier:
                     reasoning=f"匹配知识库模式: {pattern}",
                 )
         
+        for pattern in self.SEARCH_PATTERNS:
+            if re.search(pattern, query, re.IGNORECASE):
+                return IntentResult(
+                    intent=QueryIntent.SEARCH_TASK,
+                    confidence=0.90,
+                    reasoning=f"匹配搜索模式: {pattern}",
+                )
+        
         return None
     
-    def _keyword_match(self, query: str) -> Optional[IntentResult]:
+    async def _keyword_match(self, query: str) -> Optional[IntentResult]:
         """关键词匹配"""
+        kb_keywords = await self._ensure_kb_keywords()
         
         matched_kbs = []
-        for keyword, kbs in self.KB_KEYWORDS.items():
+        for keyword, kbs in kb_keywords.items():
             if keyword in query:
                 matched_kbs.extend(kbs)
         

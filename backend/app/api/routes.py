@@ -6,6 +6,7 @@ import uuid
 
 from app.db import get_db
 from app.langchain import MainAgent
+from app.langchain.agents.supervisor_agent import SupervisorAgent
 from app.langchain.tools import get_all_tools
 from app.config import settings
 from app.langchain.models.database import Conversation, Message, Memory, Skill as SkillModel
@@ -47,11 +48,11 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         await db.commit()
         await db.refresh(conversation)
     
-    agent = MainAgent(
+    agent = SupervisorAgent(
         provider=request.provider or conversation.provider,
         model=request.model or conversation.model,
         conversation_id=conversation.id,
-        system_prompt=request.system_prompt or conversation.system_prompt,
+        db_session=db,
     )
     
     try:
@@ -86,6 +87,10 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
 async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     from fastapi.responses import StreamingResponse
     import json
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"[API] /chat/stream request: message='{request.message[:50]}...', conversation_id={request.conversation_id}")
     
     conversation = None
     
@@ -106,12 +111,13 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         db.add(conversation)
         await db.commit()
         await db.refresh(conversation)
+        logger.info(f"[API] Created new conversation: {conversation.id}")
     
-    agent = MainAgent(
+    agent = SupervisorAgent(
         provider=request.provider or conversation.provider,
         model=request.model or conversation.model,
         conversation_id=conversation.id,
-        system_prompt=request.system_prompt or conversation.system_prompt,
+        db_session=db,
     )
     
     async def generate():
@@ -120,7 +126,10 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             
             async for chunk in agent.chat_stream(request.message, db=db):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            
+            logger.info(f"[API] /chat/stream completed for conversation: {conversation.id}")
         except Exception as e:
+            logger.error(f"[API] /chat/stream error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
     
     return StreamingResponse(generate(), media_type="text/event-stream")
