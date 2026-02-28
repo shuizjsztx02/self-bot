@@ -3,7 +3,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
-from typing import Optional, AsyncIterator, List, Dict, Any
+from typing import List, Optional, AsyncIterator, Dict, Any
 from pathlib import Path
 import uuid
 import logging
@@ -15,12 +15,19 @@ from app.langchain.prompts import PromptLoader, VariableInjector, PromptContext
 from app.callbacks import AgentCallbackHandler, ExecutionTracer
 from app.config import settings
 from app.skills import SkillManager, DANGEROUS_TOOLS
+from app.skills.tracer import get_skill_tracer, skill_trace_step
 from app.langchain.agents.stream_interrupt import (
     StreamInterruptManager, 
     StreamInterruptedException,
     get_stream_interrupt_manager
 )
 from app.langchain.tracing.rag_trace import get_rag_trace, trace_step
+from app.langchain.tracing.memory_trace import (
+    start_memory_trace,
+    end_memory_trace,
+    memory_trace_step,
+    get_memory_trace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,35 +174,39 @@ class MainAgent:
             logger.warning("[MainAgent] No conversation_id provided, skipping history load")
             return 0
         
-        try:
-            result = await db_session.execute(
-                select(Message)
-                .where(Message.conversation_id == conv_id)
-                .order_by(Message.created_at.desc())
-                .limit(limit)
-            )
-            messages = list(reversed(result.scalars().all()))
-            
-            if not messages:
-                logger.debug(f"[MainAgent] No history messages found for conversation {conv_id}")
+        with memory_trace_step("load_history_from_db", "general", {
+            "conversation_id": conv_id,
+            "limit": limit,
+        }):
+            try:
+                result = await db_session.execute(
+                    select(Message)
+                    .where(Message.conversation_id == conv_id)
+                    .order_by(Message.created_at.desc())
+                    .limit(limit)
+                )
+                messages = list(reversed(result.scalars().all()))
+                
+                if not messages:
+                    logger.debug(f"[MainAgent] No history messages found for conversation {conv_id}")
+                    return 0
+                
+                loaded_count = 0
+                for msg in messages:
+                    if msg.role == "user":
+                        self.short_term_memory.add_message(HumanMessage(content=msg.content))
+                    elif msg.role == "assistant":
+                        self.short_term_memory.add_message(AIMessage(content=msg.content))
+                    elif msg.role == "system":
+                        self.short_term_memory.add_message(SystemMessage(content=msg.content))
+                    loaded_count += 1
+                
+                logger.info(f"[MainAgent] Loaded {loaded_count} history messages from DB for conversation {conv_id}")
+                return loaded_count
+                
+            except Exception as e:
+                logger.error(f"[MainAgent] Failed to load history from DB: {e}")
                 return 0
-            
-            loaded_count = 0
-            for msg in messages:
-                if msg.role == "user":
-                    self.short_term_memory.add_message(HumanMessage(content=msg.content))
-                elif msg.role == "assistant":
-                    self.short_term_memory.add_message(AIMessage(content=msg.content))
-                elif msg.role == "system":
-                    self.short_term_memory.add_message(SystemMessage(content=msg.content))
-                loaded_count += 1
-            
-            logger.info(f"[MainAgent] Loaded {loaded_count} history messages from DB for conversation {conv_id}")
-            return loaded_count
-            
-        except Exception as e:
-            logger.error(f"[MainAgent] Failed to load history from DB: {e}")
-            return 0
     
     async def _build_system_prompt(self, user_message: str) -> str:
         if self.custom_system_prompt:
@@ -242,17 +253,42 @@ class MainAgent:
             tools_template=tools_template,
         )
         
-        match_result = await self.skill_manager.match_request(
-            user_message,
-            [tool.name for tool in self.tools],
-        )
+        with skill_trace_step("skill_matching", "agent", {
+            "user_message": user_message[:100] + "..." if len(user_message) > 100 else user_message,
+            "tools_count": len(self.tools),
+        }):
+            match_result = await self.skill_manager.match_request(
+                user_message,
+                [tool.name for tool in self.tools],
+            )
         
         if match_result.is_skill_match and match_result.skill:
             self._active_skill = match_result.skill
+            
+            get_skill_tracer().trace("skill_activated", "agent", {
+                "skill_name": match_result.skill.meta.name,
+                "confidence": match_result.confidence,
+                "reasoning": match_result.reasoning,
+            })
+            
             skill_prompt = self.skill_manager.build_skill_prompt([match_result.skill])
-            return f"{base_prompt}\n\n{skill_prompt}"
+            
+            final_prompt = f"{base_prompt}\n\n{skill_prompt}"
+            
+            get_skill_tracer().trace("prompt_with_skill", "agent", {
+                "base_prompt_len": len(base_prompt),
+                "skill_prompt_len": len(skill_prompt),
+                "total_len": len(final_prompt),
+            })
+            
+            return final_prompt
         
         self._active_skill = None
+        
+        get_skill_tracer().trace("no_skill_matched", "agent", {
+            "reasoning": match_result.reasoning if match_result else "No match result",
+        })
+        
         return base_prompt
     
     def _format_tools_description(self) -> str:
@@ -645,14 +681,18 @@ class MainAgent:
             logger.info(f"[MainAgent] chat_stream end: session_id={session_id}")
     
     async def _finalize_conversation(self, user_message: str, assistant_response: str):
-        self.short_term_memory.add_message(HumanMessage(content=user_message))
-        self.short_term_memory.add_message(AIMessage(content=assistant_response))
-        
-        if self.short_term_memory.needs_summary:
-            logger.info(f"[MainAgent] Summary threshold reached, triggering summary")
-            summary = await self.short_term_memory.check_and_summarize()
-            if summary:
-                logger.info(f"[MainAgent] Summary generated: {summary.token_count} tokens")
+        with memory_trace_step("finalize_conversation", "general", {
+            "user_msg_len": len(user_message),
+            "assistant_msg_len": len(assistant_response),
+        }):
+            self.short_term_memory.add_message(HumanMessage(content=user_message))
+            self.short_term_memory.add_message(AIMessage(content=assistant_response))
+            
+            if self.short_term_memory.needs_summary:
+                logger.info(f"[MainAgent] Summary threshold reached, triggering summary")
+                summary = await self.short_term_memory.check_and_summarize()
+                if summary:
+                    logger.info(f"[MainAgent] Summary generated: {summary.token_count} tokens")
         
         await self._store_to_long_term(user_message, assistant_response)
     

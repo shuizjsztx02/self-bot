@@ -4,6 +4,13 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 import asyncio
 
+from app.langchain.tracing.memory_trace import (
+    start_memory_trace,
+    end_memory_trace,
+    memory_trace_step,
+    get_memory_trace,
+)
+
 
 class MemorySummarizer:
     SUMMARY_PROMPT = """请将以下对话内容压缩成简洁的摘要，保留关键信息：
@@ -49,13 +56,18 @@ class MemorySummarizer:
             return ""
         
         conversation = self._format_messages(messages)
+        total_tokens = sum(len(msg.content) for msg in messages)
         
-        prompt = ChatPromptTemplate.from_template(self.SUMMARY_PROMPT)
-        chain = prompt | self.llm
-        
-        response = await chain.ainvoke({"conversation": conversation})
-        
-        return response.content
+        with memory_trace_step("summarize", "summary", {
+            "messages_count": len(messages),
+            "total_tokens": total_tokens,
+        }):
+            prompt = ChatPromptTemplate.from_template(self.SUMMARY_PROMPT)
+            chain = prompt | self.llm
+            
+            response = await chain.ainvoke({"conversation": conversation})
+            
+            return response.content
     
     async def summarize_async(self, messages: List[BaseMessage]) -> asyncio.Task:
         task = asyncio.create_task(self.summarize(messages))

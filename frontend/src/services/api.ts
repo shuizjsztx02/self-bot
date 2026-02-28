@@ -45,7 +45,7 @@ export const chatApi = {
     model?: string
     system_prompt?: string
   }): Promise<Conversation> => {
-    const response = await api.post('/conversations', data)
+    const response = await api.post('/conversations', data || {})
     return response.data
   },
 

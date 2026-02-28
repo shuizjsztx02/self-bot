@@ -88,10 +88,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string) => {
-    const { currentConversation, settings } = get()
-
+    const { settings } = get()
+    let { currentConversation } = get()
+    
+    if (!currentConversation) {
+      await get().createConversation()
+      currentConversation = get().currentConversation
+    }
+    
     set({ isStreaming: true, streamingContent: '' })
-
+    
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -117,9 +123,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (event.session_id) {
               set({ currentSessionId: event.session_id })
             }
-            if (!currentConversation) {
-              get().loadConversations()
-            }
+            set((state) => ({
+              currentConversation: state.currentConversation || {
+                id: event.id,
+                title: event.title || '',
+                provider: event.provider || '',
+                model: event.model || '',
+                created_at: event.created_at || '',
+                updated_at: event.created_at || '',
+                messages: [],
+              }
+            }))
           } else if (event.type === 'content') {
             set((state) => ({
               streamingContent: state.streamingContent + event.content,

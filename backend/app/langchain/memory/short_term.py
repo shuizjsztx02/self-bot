@@ -67,7 +67,16 @@ class ShortTermMemory:
         return self.utilization >= self.config.summary_threshold
     
     def add_message(self, message: BaseMessage) -> None:
-        with memory_trace_step("add_message", "short_term", {"content_len": len(message.content)}):
+        content_preview = message.content[:100] + "..." if len(message.content) > 100 else message.content
+        role = message.type if hasattr(message, 'type') else 'unknown'
+        
+        with memory_trace_step("add_message", "short_term", {
+            "role": role,
+            "content_len": len(message.content),
+            "content_preview": content_preview,
+            "total_messages": len(self.messages) + 1,
+            "total_tokens": self.current_tokens + len(message.content) // 2,
+        }):
             self.messages.append(message)
             
             if self.current_tokens > self.config.max_tokens:
@@ -77,7 +86,13 @@ class ShortTermMemory:
                 self._pending_summary = True
     
     def add_messages(self, messages: List[BaseMessage]) -> None:
-        with memory_trace_step("add_messages", "short_term", {"count": len(messages)}):
+        total_content_len = sum(len(msg.content) for msg in messages)
+        
+        with memory_trace_step("add_messages", "short_term", {
+            "count": len(messages),
+            "total_content_len": total_content_len,
+            "total_messages": len(self.messages) + len(messages),
+        }):
             self.messages.extend(messages)
             
             if self.current_tokens > self.config.max_tokens:
@@ -147,50 +162,61 @@ class ShortTermMemory:
         assistant_message: str,
         on_store_long_term: Optional[Callable[[str, str, int], Awaitable[None]]] = None,
     ) -> dict:
-        self.add_message(HumanMessage(content=user_message))
-        self.add_message(AIMessage(content=assistant_message))
-        
-        result = {
-            "summary_generated": False,
-            "summary": None,
-            "stored_to_long_term": False,
-        }
-        
-        if self.needs_summary:
-            summary = await self.check_and_summarize()
-            if summary:
-                result["summary_generated"] = True
-                result["summary"] = summary
-        
-        if on_store_long_term:
-            try:
-                await on_store_long_term(user_message, assistant_message, 3)
-                result["stored_to_long_term"] = True
-            except Exception as e:
-                logger.error(f"Failed to store to long-term memory: {e}")
-        
-        return result
+        with memory_trace_step("finalize_conversation", "short_term", {
+            "user_msg_len": len(user_message),
+            "assistant_msg_len": len(assistant_message),
+            "needs_summary": self.needs_summary,
+        }):
+            self.add_message(HumanMessage(content=user_message))
+            self.add_message(AIMessage(content=assistant_message))
+            
+            result = {
+                "summary_generated": False,
+                "summary": None,
+                "stored_to_long_term": False,
+            }
+            
+            if self.needs_summary:
+                summary = await self.check_and_summarize()
+                if summary:
+                    result["summary_generated"] = True
+                    result["summary"] = summary
+            
+            if on_store_long_term:
+                try:
+                    await on_store_long_term(user_message, assistant_message, 3)
+                    result["stored_to_long_term"] = True
+                except Exception as e:
+                    logger.error(f"Failed to store to long-term memory: {e}")
+            
+            return result
     
     def get_context(self, max_tokens: Optional[int] = None) -> List[BaseMessage]:
         max_tokens = max_tokens or self.config.max_tokens
         
-        context = []
-        
-        for summary in self.summaries[-3:]:
-            summary_msg = SystemMessage(content=f"[对话摘要] {summary.content}")
-            context.append(summary_msg)
-        
-        remaining_tokens = max_tokens - self.token_counter.count_messages(context)
-        
-        recent_messages = self.token_counter.truncate_messages(
-            self.messages,
-            remaining_tokens,
-            preserve_system=False,
-        )
-        
-        context.extend(recent_messages)
-        
-        return context
+        with memory_trace_step("get_context", "short_term", {
+            "max_tokens": max_tokens,
+            "summaries_count": len(self.summaries),
+            "messages_count": len(self.messages),
+            "total_tokens": self.current_tokens,
+        }):
+            context = []
+            
+            for summary in self.summaries[-3:]:
+                summary_msg = SystemMessage(content=f"[对话摘要] {summary.content}")
+                context.append(summary_msg)
+            
+            remaining_tokens = max_tokens - self.token_counter.count_messages(context)
+            
+            recent_messages = self.token_counter.truncate_messages(
+                self.messages,
+                remaining_tokens,
+                preserve_system=False,
+            )
+            
+            context.extend(recent_messages)
+            
+            return context
     
     def clear(self) -> None:
         self.messages = []

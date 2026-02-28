@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     HISTORY_LOAD_LIMIT: int = 20
     HISTORY_MAX_TOKENS: int = 4000
     
+    # 记忆追踪配置
+    MEMORY_TRACE_ENABLED: bool = True
+    MEMORY_TRACE_CONTENT_PREVIEW: int = 100
+    MEMORY_TRACE_LOG_LEVEL: str = "INFO"
+    
     EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
     MODEL_HUB_PATH: str = "./model_hub"

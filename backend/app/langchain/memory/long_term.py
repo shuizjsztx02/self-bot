@@ -69,10 +69,15 @@ class LongTermMemory:
         tags: Optional[List[str]] = None,
         source_conversation_id: Optional[str] = None,
     ) -> MemoryEntry:
+        content_preview = content[:100] + "..." if len(content) > 100 else content
+        
         with memory_trace_step("long_term_store", "long_term", {
             "content_len": len(content),
+            "content_preview": content_preview,
             "category": category,
             "importance": importance,
+            "tags": tags,
+            "conversation_id": source_conversation_id,
         }):
             await self.initialize()
             
@@ -163,14 +168,18 @@ class LongTermMemory:
         use_rerank: bool = True,
         apply_time_decay: bool = True,
     ) -> List[tuple[MemoryEntry, float]]:
+        query_preview = query[:100] + "..." if len(query) > 100 else query
+        
         with memory_trace_step("long_term_retrieve", "long_term", {
-            "query_len": len(query),
+            "query": query_preview,
             "top_k": top_k,
+            "min_importance": min_importance,
             "use_rerank": use_rerank,
+            "apply_time_decay": apply_time_decay,
         }):
             await self.initialize()
             
-            with memory_trace_step("vector_search", "vector", {"query_len": len(query), "top_k": top_k}):
+            with memory_trace_step("vector_search", "vector", {"query": query_preview, "top_k": top_k}):
                 results = await self.rag_retriever.retrieve(
                     query=query,
                     top_k=top_k,
@@ -205,8 +214,16 @@ class LongTermMemory:
                 entries.append((entry, score))
             
             if apply_time_decay:
-                with memory_trace_step("time_decay", "long_term", {"entry_count": len(entries)}):
+                with memory_trace_step("time_decay", "long_term", {
+                    "entry_count": len(entries),
+                    "half_life_days": self.time_decay_config.half_life_days,
+                }):
                     entries = self._apply_time_decay(entries)
+            
+            result_preview = [
+                {"content": e.content[:50] + "...", "score": round(s, 3)}
+                for e, s in entries[:3]
+            ]
             
             logger.info(f"[LongTermMemory] Retrieved: {len(entries)} entries for query")
             
@@ -228,26 +245,34 @@ class LongTermMemory:
         query: str,
         max_tokens: int = 2000,
     ) -> str:
-        results = await self.retrieve(query, top_k=5)
+        query_preview = query[:100] + "..." if len(query) > 100 else query
         
-        if not results:
-            return ""
-        
-        context_parts = []
-        current_tokens = 0
-        
-        for entry, score in results:
-            estimated_tokens = len(entry.content.split()) * 1.5
+        with memory_trace_step("get_context_for_query", "long_term", {
+            "query": query_preview,
+            "max_tokens": max_tokens,
+        }):
+            results = await self.retrieve(query, top_k=5)
             
-            if current_tokens + estimated_tokens > max_tokens:
-                break
+            if not results:
+                return ""
             
-            context_parts.append(
-                f"[重要度:{entry.importance}] {entry.content}"
-            )
-            current_tokens += estimated_tokens
-        
-        return "\n\n".join(context_parts)
+            context_parts = []
+            current_tokens = 0
+            
+            for entry, score in results:
+                estimated_tokens = len(entry.content.split()) * 1.5
+                
+                if current_tokens + estimated_tokens > max_tokens:
+                    break
+                
+                context_parts.append(
+                    f"[重要度:{entry.importance}] {entry.content}"
+                )
+                current_tokens += estimated_tokens
+            
+            context = "\n\n".join(context_parts)
+            
+            return context
     
     async def list_by_importance(self, level: int) -> List[MemoryEntry]:
         return await self.md_storage.list_by_level(level)

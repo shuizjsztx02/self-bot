@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
@@ -123,7 +123,14 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     
     async def generate():
         try:
-            yield f"data: {json.dumps({'type': 'conversation_id', 'id': conversation.id}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({
+                'type': 'conversation_id', 
+                'id': conversation.id,
+                'title': conversation.title,
+                'provider': conversation.provider,
+                'model': conversation.model,
+                'created_at': conversation.created_at.isoformat() if conversation.created_at else None,
+            }, ensure_ascii=False)}\n\n"
             
             async for chunk in agent.chat_stream(request.message, db=db):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -210,9 +217,12 @@ async def get_conversation(
 
 @router.post("/conversations")
 async def create_conversation(
-    request: ConversationCreate,
+    request: ConversationCreate = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ):
+    if request is None:
+        request = ConversationCreate()
+    
     conversation = Conversation(
         id=str(uuid.uuid4()),
         title=request.title,

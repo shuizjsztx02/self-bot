@@ -6,6 +6,7 @@ import asyncio
 from .base import Skill, SkillTool, DANGEROUS_TOOLS
 from .loader import SkillLoader
 from .matcher import SkillMatcher, MatchResult
+from .tracer import get_skill_tracer, skill_trace_step
 
 
 class SkillManager:
@@ -24,15 +25,21 @@ class SkillManager:
         self._initialized = False
     
     async def initialize(self):
-        if self._initialized:
-            return
-        
-        await self.loader.load_all()
-        
-        if self.loader.enable_watcher:
-            await self.loader.start_watcher()
-        
-        self._initialized = True
+        with skill_trace_step("initialize", "manager", {}):
+            if self._initialized:
+                return
+            
+            await self.loader.load_all()
+            
+            if self.loader.enable_watcher:
+                await self.loader.start_watcher()
+            
+            self._initialized = True
+            
+            skills_count = len(self.loader.get_all_cached())
+            get_skill_tracer().trace("initialized", "manager", {
+                "skills_count": skills_count,
+            })
     
     def set_llm(self, llm):
         self.llm = llm
@@ -59,13 +66,27 @@ class SkillManager:
         query: str,
         available_tools: List[str],
     ) -> MatchResult:
-        skills = list(self.loader.get_all_cached().values())
-        enabled_skills = [s for s in skills if s.meta.enabled]
-        
-        if self.llm:
-            return await self.matcher.match(query, enabled_skills, available_tools)
-        else:
-            return self.matcher._fallback_match(query, enabled_skills, available_tools)
+        with skill_trace_step("match_request", "manager", {
+            "query": query[:100] + "..." if len(query) > 100 else query,
+            "available_tools_count": len(available_tools),
+        }):
+            skills = list(self.loader.get_all_cached().values())
+            enabled_skills = [s for s in skills if s.meta.enabled]
+            
+            if self.llm:
+                result = await self.matcher.match(query, enabled_skills, available_tools)
+            else:
+                result = self.matcher._fallback_match(query, enabled_skills, available_tools)
+            
+            get_skill_tracer().trace("match_result", "matcher", {
+                "matched_skill": result.skill.meta.name if result.skill else None,
+                "matched_tool": result.tool_name,
+                "confidence": result.confidence,
+                "is_skill_match": result.is_skill_match,
+                "reasoning": result.reasoning[:100] if result.reasoning else None,
+            })
+            
+            return result
     
     def activate_skill(self, skill_name: str) -> bool:
         skill = self.loader.get_cached(skill_name)
@@ -98,20 +119,40 @@ class SkillManager:
         return True, ""
     
     def build_skill_prompt(self, skills: List[Skill]) -> str:
-        if not skills:
-            return ""
+        skill_names = [s.meta.name for s in skills]
         
-        parts = []
-        
-        for skill in skills:
-            parts.append(f"""
+        with skill_trace_step("build_skill_prompt", "prompt", {
+            "skills": skill_names,
+            "skills_count": len(skills),
+        }):
+            if not skills:
+                return ""
+            
+            parts = []
+            
+            for skill in skills:
+                skill_prompt = f"""
 ## 激活的 Skill: {skill.meta.name}
 
 {skill.instructions}
 
-""")
-        
-        return "\n".join(parts)
+"""
+                parts.append(skill_prompt)
+                
+                get_skill_tracer().trace("skill_prompt_injected", "prompt", {
+                    "skill_name": skill.meta.name,
+                    "instructions_len": len(skill.instructions),
+                    "description": skill.meta.description,
+                })
+            
+            result = "\n".join(parts)
+            
+            get_skill_tracer().trace("skill_prompt_built", "prompt", {
+                "total_len": len(result),
+                "skills_count": len(skills),
+            })
+            
+            return result
     
     async def create_skill(
         self,

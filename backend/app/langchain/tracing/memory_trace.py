@@ -270,9 +270,11 @@ class MemoryTraceConfig:
     """记忆追踪配置"""
     
     def __init__(self):
-        self.enabled: bool = True
-        self.log_level: str = "INFO"
-        self.max_content_length: int = 200
+        from app.config import settings
+        
+        self.enabled: bool = getattr(settings, 'MEMORY_TRACE_ENABLED', True)
+        self.log_level: str = getattr(settings, 'MEMORY_TRACE_LOG_LEVEL', "INFO")
+        self.max_content_length: int = getattr(settings, 'MEMORY_TRACE_CONTENT_PREVIEW', 100)
         self.trace_short_term: bool = True
         self.trace_long_term: bool = True
         self.trace_summary: bool = True
@@ -282,7 +284,7 @@ class MemoryTraceConfig:
         self,
         enabled: bool = True,
         log_level: str = "INFO",
-        max_content_length: int = 200,
+        max_content_length: int = 100,
         trace_short_term: bool = True,
         trace_long_term: bool = True,
         trace_summary: bool = True,
