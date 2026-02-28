@@ -212,6 +212,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               currentSessionId: null,
               abortController: null,
             })
+            get().loadConversations()
           } else if (event.type === 'error') {
             console.error('Stream error:', event.error)
             const errorMessage: Message = {

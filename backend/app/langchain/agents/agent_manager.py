@@ -63,13 +63,26 @@ class AgentManager:
             SupervisorAgent 实例
         """
         async with self._lock:
+            from app.config import settings
+            history_limit = getattr(settings, 'HISTORY_LOAD_LIMIT', 20)
+            history_enabled = getattr(settings, 'HISTORY_LOAD_ENABLED', True)
+            
             if conversation_id in self._active_agents:
+                agent = self._active_agents[conversation_id]
+                
+                if history_enabled:
+                    try:
+                        agent.main_agent.short_term_memory.clear()
+                        loaded_count = await agent.load_history(db_session, limit=history_limit)
+                        logger.info(f"Reloaded {loaded_count} history messages for cached agent: {conversation_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to reload history for {conversation_id}: {e}")
+                
                 self._access_times[conversation_id] = datetime.now(timezone.utc)
                 logger.debug(f"Agent cache hit: {conversation_id}")
-                return self._active_agents[conversation_id]
+                return agent
             
             from app.langchain.agents.supervisor_agent import SupervisorAgent
-            from app.config import settings
             
             agent = SupervisorAgent(
                 provider=provider,
@@ -78,8 +91,7 @@ class AgentManager:
                 db_session=db_session,
             )
             
-            history_limit = getattr(settings, 'HISTORY_LOAD_LIMIT', 20)
-            if getattr(settings, 'HISTORY_LOAD_ENABLED', True):
+            if history_enabled:
                 try:
                     loaded_count = await agent.load_history(db_session, limit=history_limit)
                     logger.info(f"Loaded {loaded_count} history messages for conversation {conversation_id}")

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from typing import Optional
 import uuid
 
@@ -89,6 +89,7 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     from fastapi.responses import StreamingResponse
     import json
     import logging
+    from datetime import datetime, timezone
     
     logger = logging.getLogger(__name__)
     logger.info(f"[API] /chat/stream request: message='{request.message[:50]}...', conversation_id={request.conversation_id}")
@@ -100,6 +101,8 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             select(Conversation).where(Conversation.id == request.conversation_id)
         )
         conversation = result.scalar_one_or_none()
+    
+    is_new_conversation = not conversation
     
     if not conversation:
         conversation = Conversation(
@@ -114,6 +117,15 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         await db.refresh(conversation)
         logger.info(f"[API] Created new conversation: {conversation.id}")
     
+    user_message = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content=request.message,
+    )
+    db.add(user_message)
+    await db.commit()
+    logger.info(f"[API] Saved user message for conversation: {conversation.id}")
+    
     agent = await agent_manager.get_agent(
         conversation_id=conversation.id,
         db_session=db,
@@ -122,6 +134,7 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     )
     
     async def generate():
+        full_response = ""
         try:
             yield f"data: {json.dumps({
                 'type': 'conversation_id', 
@@ -133,9 +146,24 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             }, ensure_ascii=False)}\n\n"
             
             async for chunk in agent.chat_stream(request.message, db=db):
+                if chunk.get("type") == "content":
+                    full_response += chunk.get("content", "")
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             
-            logger.info(f"[API] /chat/stream completed for conversation: {conversation.id}")
+            assistant_message = Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=full_response,
+            )
+            db.add(assistant_message)
+            
+            conversation.updated_at = datetime.now(timezone.utc)
+            if is_new_conversation and request.message:
+                conversation.title = request.message[:50]
+            
+            await db.commit()
+            
+            logger.info(f"[API] /chat/stream completed for conversation: {conversation.id}, response_len={len(full_response)}")
         except Exception as e:
             logger.error(f"[API] /chat/stream error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
@@ -157,8 +185,23 @@ async def list_conversations(
         .limit(limit)
     )
     conversations = result.scalars().all()
-    return [
-        {
+    
+    conversation_list = []
+    for conv in conversations:
+        last_msg_result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        last_message = last_msg_result.scalar_one_or_none()
+        
+        msg_count_result = await db.execute(
+            select(func.count(Message.id)).where(Message.conversation_id == conv.id)
+        )
+        message_count = msg_count_result.scalar() or 0
+        
+        conversation_list.append({
             "id": conv.id,
             "title": conv.title,
             "provider": conv.provider,
@@ -166,10 +209,15 @@ async def list_conversations(
             "system_prompt": conv.system_prompt,
             "created_at": conv.created_at.isoformat() if conv.created_at else None,
             "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
-            "messages": [],
-        }
-        for conv in conversations
-    ]
+            "last_message": {
+                "role": last_message.role,
+                "content": last_message.content[:100] if last_message and len(last_message.content) > 100 else (last_message.content if last_message else None),
+                "created_at": last_message.created_at.isoformat() if last_message and last_message.created_at else None,
+            } if last_message else None,
+            "message_count": message_count,
+        })
+    
+    return conversation_list
 
 
 @router.get("/conversations/{conversation_id}")
