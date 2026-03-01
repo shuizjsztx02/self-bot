@@ -63,6 +63,11 @@ export const chatApi = {
     await api.delete(`/conversations/${id}`)
   },
 
+  updateConversation: async (id: string, data: { title?: string; system_prompt?: string }): Promise<Conversation> => {
+    const response = await api.patch(`/conversations/${id}`, data)
+    return response.data
+  },
+
   sendMessage: async (data: {
     message: string
     conversation_id?: string

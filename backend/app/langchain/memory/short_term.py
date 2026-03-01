@@ -66,11 +66,11 @@ class ShortTermMemory:
     def needs_summary(self) -> bool:
         return self.utilization >= self.config.summary_threshold
     
-    def add_message(self, message: BaseMessage) -> None:
+    def add_short_term_memory(self, message: BaseMessage) -> None:
         content_preview = message.content[:100] + "..." if len(message.content) > 100 else message.content
         role = message.type if hasattr(message, 'type') else 'unknown'
         
-        with memory_trace_step("add_message", "short_term", {
+        with memory_trace_step("add_short_term_memory", "short_term", {
             "role": role,
             "content_len": len(message.content),
             "content_preview": content_preview,
@@ -167,8 +167,8 @@ class ShortTermMemory:
             "assistant_msg_len": len(assistant_message),
             "needs_summary": self.needs_summary,
         }):
-            self.add_message(HumanMessage(content=user_message))
-            self.add_message(AIMessage(content=assistant_message))
+            self.add_short_term_memory(HumanMessage(content=user_message))
+            self.add_short_term_memory(AIMessage(content=assistant_message))
             
             result = {
                 "summary_generated": False,

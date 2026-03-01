@@ -240,14 +240,14 @@ class LongTermMemory:
         
         return deleted
     
-    async def get_context_for_query(
+    async def get_long_term_memory_for_query(
         self,
         query: str,
         max_tokens: int = 2000,
     ) -> str:
         query_preview = query[:100] + "..." if len(query) > 100 else query
         
-        with memory_trace_step("get_context_for_query", "long_term", {
+        with memory_trace_step("get_long_term_memory_for_query", "long_term", {
             "query": query_preview,
             "max_tokens": max_tokens,
         }):

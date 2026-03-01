@@ -1,15 +1,218 @@
 # Self-Bot
 
-一个基于 LangChain 的智能个人助理 Agent，支持多模态文档处理、知识库管理和 MCP 工具扩展。
+一个基于 LangChain 的智能个人助理 Agent，支持多模型、记忆系统、知识库管理和 MCP 工具扩展。
 
-## ✨ 特性
+## ✨ 核心特性
 
-- 🤖 **多模型支持** - OpenAI、Anthropic、本地模型等
-- 📄 **文档处理** - Word/Excel/PPT/PDF 创建、编辑、转换
-- 🔍 **RAG 知识库** - 向量检索、智能问答
-- 🛠️ **MCP 工具生态** - 139+ 内置工具，支持自定义扩展
-- 💬 **流式对话** - 实时响应，支持中断
-- 🎯 **技能系统** - 可插拔的技能模块
+### 🤖 多模型支持
+- **OpenAI** - GPT-4o, GPT-4-turbo
+- **Anthropic** - Claude 3.5 Sonnet
+- **DeepSeek** - DeepSeek Chat
+- **通义千问** - Qwen Plus
+- **智谱 GLM** - GLM-4 Plus
+- **MiniMax** - abab6.5s-chat
+- **Moonshot** - moonshot-v1-8k
+- **Ollama** - 本地模型支持
+
+### 🧠 智能记忆系统
+- **短期记忆** - Token 计数、自动摘要、容量管理
+- **长期记忆** - 向量检索、时间衰减、重要性评估
+- **会话隔离** - 每个 conversation 独立记忆上下文
+- **历史加载** - 从数据库自动加载历史消息
+
+### 📄 文档处理
+- **Word** - 创建、编辑、PDF 转换 
+- **Excel** - 表格操作、数据处理 
+- **PPTX** - 幻灯片创建、设计 
+- **PDF** - 表单填充、图像提取
+
+### 🔍 RAG 知识库
+- 向量检索 (ChromaDB)
+- BM25 关键词检索
+- 混合检索策略
+- 文档解析 (PDF/Word/Excel/Markdown)
+
+### 🛠️ MCP 工具生态
+- 150+ 内置工具
+- 自定义工具扩展
+- 飞书/Notion 集成
+
+### 💬 对话管理
+- 流式响应
+- 中断支持
+- 多轮对话
+- 会话历史持久化
+
+## 🏗️ 项目架构
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              Self-Bot 架构图                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                           Frontend (React + Vite)                        │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │   │
+│  │  │   Chat UI   │  │  Sidebar    │  │  Settings   │  │  Knowledge  │    │   │
+│  │  │  (流式对话)  │  │  (会话管理) │  │  (模型配置) │  │  (知识库)   │    │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘    │   │
+│  │                              │ Zustand State │                           │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                        │                                       │
+│                                        ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                        Backend (FastAPI + LangChain)                     │   │
+│  │                                                                         │   │
+│  │  ┌───────────────────────────────────────────────────────────────────┐ │   │
+│  │  │                         API Layer                                  │ │   │
+│  │  │  /api/chat/stream  /api/conversations  /api/knowledge  /api/skills│ │   │
+│  │  └───────────────────────────────────────────────────────────────────┘ │   │
+│  │                                    │                                    │   │
+│  │  ┌───────────────────────────────────────────────────────────────────┐ │   │
+│  │  │                       Agent Layer                                  │ │   │
+│  │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │ │   │
+│  │  │  │ MainAgent   │  │  RagAgent   │  │ Researcher  │               │ │   │
+│  │  │  │ (主对话)    │  │  (知识检索) │  │  (研究)     │               │ │   │
+│  │  │  └─────────────┘  └─────────────┘  └─────────────┘               │ │   │
+│  │  │                                                                   │ │   │
+│  │  │  ┌─────────────────────────────────────────────────────────────┐ │ │   │
+│  │  │  │                    AgentManager                              │ │ │   │
+│  │  │  │  • Agent 缓存 (TTL: 1h, Max: 100)                           │ │ │   │
+│  │  │  │  • 会话隔离 (conversation_id)                               │ │ │   │
+│  │  │  │  • 历史加载 (自动从 DB 加载)                                │ │ │   │
+│  │  │  └─────────────────────────────────────────────────────────────┘ │ │   │
+│  │  └───────────────────────────────────────────────────────────────────┘ │   │
+│  │                                    │                                    │   │
+│  │  ┌───────────────────────────────────────────────────────────────────┐ │   │
+│  │  │                       Memory Layer                                 │ │   │
+│  │  │  ┌─────────────────────┐  ┌─────────────────────────────────────┐ │ │   │
+│  │  │  │   ShortTermMemory   │  │       LongTermMemory                │ │ │   │
+│  │  │  │   (短期记忆)         │  │       (长期记忆)                     │ │ │   │
+│  │  │  │  • messages[]       │  │  • MDStorage (文件存储)             │ │ │   │
+│  │  │  │  • summaries[]      │  │  • ChromaVectorStore (向量检索)     │ │ │   │
+│  │  │  │  • max_tokens: 10k  │  │  • RAGRetriever (RAG 检索)          │ │ │   │
+│  │  │  │  • 自动摘要 (80%)   │  │  • 时间衰减权重                     │ │ │   │
+│  │  │  └─────────────────────┘  └─────────────────────────────────────┘ │ │   │
+│  │  └───────────────────────────────────────────────────────────────────┘ │   │
+│  │                                    │                                    │   │
+│  │  ┌───────────────────────────────────────────────────────────────────┐ │   │
+│  │  │                       Tool Layer (MCP)                             │ │   │
+│  │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐     │ │   │
+│  │  │  │  Word   │ │  Excel  │ │  PPTX   │ │ Notion  │ │ Feishu  │     │ │   │
+│  │  │  │ 54 tools│ │ 25 tools│ │ 37 tools│ │ 4 tools │ │ 19 tools│     │ │   │
+│  │  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘     │ │   │
+│  │  └───────────────────────────────────────────────────────────────────┘ │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                        │                                       │
+│                                        ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                          Data Layer                                      │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │   │
+│  │  │   SQLite    │  │  ChromaDB   │  │  MD Files   │  │  Workspace  │    │   │
+│  │  │  (会话/消息)│  │  (向量存储) │  │  (长期记忆) │  │  (文档处理) │    │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘    │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## 📁 项目结构
+
+```
+self-bot/
+├── backend/
+│   ├── app/
+│   │   ├── api/                    # API 路由层
+│   │   │   ├── routes.py           # REST API 端点
+│   │   │   └── schemas.py          # 请求/响应模型
+│   │   │
+│   │   ├── langchain/              # Agent 核心模块
+│   │   │   ├── agents/             # Agent 实现
+│   │   │   │   ├── main_agent.py       # 主对话 Agent
+│   │   │   │   ├── rag_agent.py        # RAG 检索 Agent
+│   │   │   │   ├── supervisor_agent.py # 监督者 Agent
+│   │   │   │   ├── agent_manager.py    # Agent 缓存管理
+│   │   │   │   └── state.py            # Agent 状态
+│   │   │   │
+│   │   │   ├── memory/             # 记忆系统
+│   │   │   │   ├── short_term.py       # 短期记忆
+│   │   │   │   ├── long_term.py        # 长期记忆
+│   │   │   │   ├── summarizer.py       # 摘要生成
+│   │   │   │   ├── vector_store.py     # 向量存储
+│   │   │   │   └── rag_retriever.py    # RAG 检索器
+│   │   │   │
+│   │   │   ├── tools/              # 工具集
+│   │   │   ├── prompts/            # 提示词模板
+│   │   │   ├── services/           # 服务层
+│   │   │   └── tracing/            # 追踪日志
+│   │   │
+│   │   ├── knowledge_base/         # 知识库模块
+│   │   │   ├── parsers/            # 文档解析器
+│   │   │   ├── services/           # 知识库服务
+│   │   │   └── routes/             # 知识库 API
+│   │   │
+│   │   ├── mcp/                    # MCP 集成
+│   │   ├── skills/                 # 技能模块
+│   │   ├── db/                     # 数据库
+│   │   └── config.py               # 配置管理
+│   │
+│   ├── mcp_servers/                # MCP 服务器
+│   │   ├── word/                   # Word 文档工具
+│   │   ├── excel/                  # Excel 工具
+│   │   ├── pptx/                   # PPT 工具
+│   │   ├── notion/                 # Notion 集成
+│   │   └── feishu/                 # 飞书集成
+│   │
+│   ├── skills/                     # 技能定义
+│   ├── prompts/                    # 提示词文件
+│   └── data/                       # 数据存储
+│       ├── database/               # SQLite 数据库
+│       ├── knowledge_base/         # 知识库文件
+│       └── agent/                  # Agent 数据
+│
+├── frontend/                       # React 前端
+│   ├── src/
+│   │   ├── components/             # UI 组件
+│   │   │   ├── Sidebar.tsx         # 侧边栏 (会话管理)
+│   │   │   ├── ChatInterface.tsx   # 对话界面
+│   │   │   └── ...
+│   │   ├── stores/                 # 状态管理
+│   │   │   └── chatStore.ts        # Zustand Store
+│   │   ├── services/               # API 服务
+│   │   └── types/                  # TypeScript 类型
+│   └── package.json
+│
+└── README.md
+```
+
+## 🛠️ 技术栈
+
+### 后端
+| 类别 | 技术 |
+|------|------|
+| **Web 框架** | FastAPI, Uvicorn |
+| **LLM 框架** | LangChain, LangChain Core |
+| **LLM 提供商** | OpenAI, Anthropic, DeepSeek, Qwen, GLM, MiniMax, Moonshot, Ollama |
+| **数据库** | SQLite + SQLAlchemy (Async) |
+| **向量数据库** | ChromaDB |
+| **嵌入模型** | Sentence Transformers (BAAI/bge-base-zh-v1.5) |
+| **重排序模型** | BAAI/bge-reranker-base |
+| **MCP 协议** | mcp[cli], fastmcp |
+| **文档处理** | python-docx, python-pptx, openpyxl |
+| **Token 计数** | tiktoken |
+
+### 前端
+| 类别 | 技术 |
+|------|------|
+| **框架** | React 18 |
+| **构建工具** | Vite 5 |
+| **语言** | TypeScript |
+| **状态管理** | Zustand |
+| **HTTP 客户端** | Axios |
+| **样式** | TailwindCSS |
+| **路由** | React Router DOM |
+| **图标** | Lucide React |
+| **Markdown** | react-markdown, react-syntax-highlighter |
 
 ## 🚀 快速开始
 
@@ -17,7 +220,7 @@
 
 - Python 3.10+
 - Node.js 18+
-- pnpm / npm
+- CUDA (可选，用于本地嵌入模型加速)
 
 ### 安装
 
@@ -40,9 +243,9 @@ npm install
 ### 启动
 
 ```bash
-# 启动后端 (端口 8001)
+# 启动后端 (端口 8000)
 cd backend
-python run.py --port 8001
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # 启动前端 (端口 3000)
 cd frontend
@@ -51,77 +254,116 @@ npm run dev
 
 访问 http://localhost:3000 开始使用。
 
-## 📁 项目结构
-
-```
-self-bot/
-├── backend/
-│   ├── app/
-│   │   ├── api/          # API 路由
-│   │   ├── auth/         # 认证模块
-│   │   ├── langchain/    # Agent 核心
-│   │   ├── mcp/          # MCP 工具集成
-│   │   ├── knowledge_base/ # 知识库
-│   │   └── skills/       # 技能模块
-│   ├── mcp_servers/      # MCP 服务器
-│   │   ├── word/         # Word 文档工具
-│   │   ├── excel/        # Excel 工具
-│   │   ├── pptx/         # PPT 工具
-│   │   ├── notion/       # Notion 集成
-│   │   └── feishu/       # 飞书集成
-│   └── workspace/        # 工作目录
-├── frontend/             # React 前端
-└── README.md
-```
-
 ## ⚙️ 配置
 
 编辑 `backend/.env`：
 
 ```env
-# LLM Provider
+# LLM Provider (选择一个或多个)
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-xxx
+DEEPSEEK_API_KEY=sk-xxx
+QWEN_API_KEY=sk-xxx
+GLM_API_KEY=xxx
+
+# 默认 LLM 提供商
+DEFAULT_LLM_PROVIDER=deepseek
+
+# 搜索 API (可选)
+TAVILY_API_KEY=tvly-xxx
+SERPAPI_API_KEY=xxx
 
 # MCP 预加载
 PRELOAD_MCP_TOOLS=true
 
-# Notion (可选)
-NOTION_API_KEY=ntn_xxx
-NOTION_DATABASE_ID=xxx
+# 记忆配置
+MEMORY_MAX_TOKENS=10000
+MEMORY_SUMMARY_THRESHOLD=0.8
+MEMORY_KEEP_RECENT=10
 
-# 飞书 (可选)
-FEISHU_APP_ID=xxx
-FEISHU_APP_SECRET=xxx
+# Agent 缓存
+AGENT_CACHE_TTL=3600
+AGENT_CACHE_MAX_SIZE=100
+
+# 历史加载
+HISTORY_LOAD_ENABLED=true
+HISTORY_LOAD_LIMIT=20
 ```
 
-## 🛠️ MCP 工具
+## 📖 功能详解
+
+### 1. 对话管理
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        对话流程                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  用户发送消息                                                    │
+│      │                                                          │
+│      ▼                                                          │
+│  前端检查 currentConversation                                   │
+│      │                                                          │
+│      ├── 无 → 创建新会话                                        │
+│      └── 有 → 使用现有会话 ID                                   │
+│      │                                                          │
+│      ▼                                                          │
+│  POST /api/chat/stream                                          │
+│      │                                                          │
+│      ▼                                                          │
+│  AgentManager.get_agent(conversation_id)                        │
+│      │                                                          │
+│      ├── 缓存命中 → 清空短期记忆 → 重新加载历史                  │
+│      └── 缓存未命中 → 创建新 Agent → 加载历史                   │
+│      │                                                          │
+│      ▼                                                          │
+│  Agent 处理消息                                                  │
+│      │                                                          │
+│      ├── 保存用户消息到数据库                                   │
+│      ├── 流式返回响应                                           │
+│      └── 保存助手消息到数据库                                   │
+│      │                                                          │
+│      ▼                                                          │
+│  前端刷新对话列表                                               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 2. 记忆系统
+
+#### 短期记忆
+- **存储**: 内存 (不持久化)
+- **容量**: 10000 tokens
+- **自动摘要**: 利用率达 80% 时触发
+- **保留策略**: 最近 10 条消息 + 最近 3 个摘要
+
+#### 长期记忆
+- **存储**: 文件系统 + 向量数据库
+- **检索**: 向量相似度 + 时间衰减
+- **去重**: 相似度 > 95% 跳过存储
+- **重要性评估**: 只存储重要性 >= 3 的内容
+
+### 3. 会话隔离
+
+每个会话的消息和记忆完全隔离：
+- 数据库查询使用 `WHERE conversation_id = ?`
+- Agent 缓存按 `conversation_id` 区分
+- 切换会话时自动清空并重新加载历史
+
+### 4. MCP 工具
 
 | 服务 | 工具数 | 功能 |
 |------|--------|------|
-| Word | 54 | 文档创建、编辑、PDF转换 |
-| Excel | 25 | 表格操作、数据处理 |
-| PPTX | 37 | 幻灯片创建、设计 |
-| Notion | 4 | 笔记管理 |
+| Word | 54 | 文档创建、编辑、PDF 转换、批注、保护 |
+| Excel | 25 | 表格操作、数据处理、图表、透视表 |
+| PPTX | 37 | 幻灯片创建、设计、动画、模板 |
+| Notion | 4 | 笔记管理、数据库操作 |
 | Feishu | 19 | 飞书文档、多维表格 |
-
-## 📖 使用示例
-
-```
-用户: 创建一份项目报告 Word 文档，包含标题和三个段落
-Agent: [调用 create_document, add_paragraph] 已创建 report.docx
-
-用户: 将文档转换为 PDF
-Agent: [调用 convert_to_pdf] 已生成 report.pdf
-
-用户: 搜索知识库中关于机器学习的内容
-Agent: [调用 RAG 检索] 找到 5 篇相关文档...
-```
 
 ## 🔧 开发
 
 ```bash
-# 运行测试
+# 运行后端测试
 cd backend
 pytest
 
@@ -130,7 +372,24 @@ ruff check app/
 
 # 类型检查
 pyright app/
+
+# 前端构建
+cd frontend
+npm run build
 ```
+
+## 📊 API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/chat/stream` | POST | 流式对话 |
+| `/api/conversations` | GET | 获取会话列表 |
+| `/api/conversations/{id}` | GET | 获取会话详情 |
+| `/api/conversations/{id}` | PATCH | 更新会话 (重命名) |
+| `/api/conversations/{id}` | DELETE | 删除会话 |
+| `/api/settings` | GET | 获取设置 |
+| `/api/knowledge/bases` | GET | 获取知识库列表 |
+| `/api/knowledge/search` | POST | 知识检索 |
 
 ## 📄 License
 

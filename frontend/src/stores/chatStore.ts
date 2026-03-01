@@ -18,6 +18,7 @@ interface ChatState {
   loadConversation: (id: string) => Promise<void>
   createConversation: (data?: any) => Promise<Conversation>
   deleteConversation: (id: string) => Promise<void>
+  updateConversation: (id: string, data: { title?: string; system_prompt?: string }) => Promise<void>
   sendMessage: (content: string) => Promise<void>
   interruptStream: () => Promise<void>
   clearCurrentConversation: () => void
@@ -84,6 +85,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentConversation:
         state.currentConversation?.id === id ? null : state.currentConversation,
       messages: state.currentConversation?.id === id ? [] : state.messages,
+    }))
+  },
+
+  updateConversation: async (id: string, data: { title?: string; system_prompt?: string }) => {
+    await chatApi.updateConversation(id, data)
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === id ? { ...c, ...data } : c
+      ),
+      currentConversation:
+        state.currentConversation?.id === id
+          ? { ...state.currentConversation, ...data }
+          : state.currentConversation,
     }))
   },
 

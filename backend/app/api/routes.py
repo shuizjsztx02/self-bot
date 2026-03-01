@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import Optional
 import uuid
+import logging
 
 from app.db import get_db
 from app.langchain import MainAgent
@@ -25,6 +26,7 @@ from .schemas import (
 )
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -330,8 +332,10 @@ async def delete_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
-    conversation.is_active = False
+    await db.delete(conversation)
     await db.commit()
+    
+    logger.info(f"[API] Deleted conversation: {conversation_id}")
     return {"status": "deleted", "conversation_id": conversation_id}
 
 

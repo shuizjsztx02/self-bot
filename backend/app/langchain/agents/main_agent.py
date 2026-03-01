@@ -194,11 +194,11 @@ class MainAgent:
                 loaded_count = 0
                 for msg in messages:
                     if msg.role == "user":
-                        self.short_term_memory.add_message(HumanMessage(content=msg.content))
+                        self.short_term_memory.add_short_term_memory(HumanMessage(content=msg.content))
                     elif msg.role == "assistant":
-                        self.short_term_memory.add_message(AIMessage(content=msg.content))
+                        self.short_term_memory.add_short_term_memory(AIMessage(content=msg.content))
                     elif msg.role == "system":
-                        self.short_term_memory.add_message(SystemMessage(content=msg.content))
+                        self.short_term_memory.add_short_term_memory(SystemMessage(content=msg.content))
                     loaded_count += 1
                 
                 logger.info(f"[MainAgent] Loaded {loaded_count} history messages from DB for conversation {conv_id}")
@@ -225,7 +225,7 @@ class MainAgent:
             print(f"Prompt file not found: {e}")
             return self._get_default_system_prompt()
         
-        memory_context = await self.long_term_memory.get_context_for_query(
+        memory_context = await self.long_term_memory.get_long_term_memory_for_query(
             user_message,
             max_tokens=2000,
         )
@@ -382,7 +382,7 @@ class MainAgent:
         
         tool_summary = f"[工具调用] {tool_name}({args_str}) → {result_str}"
         
-        self.short_term_memory.add_message(SystemMessage(content=tool_summary))
+        self.short_term_memory.add_short_term_memory(SystemMessage(content=tool_summary))
         
         logger.info(f"[MainAgent] Tool call recorded: {tool_name}")
     
@@ -685,8 +685,8 @@ class MainAgent:
             "user_msg_len": len(user_message),
             "assistant_msg_len": len(assistant_response),
         }):
-            self.short_term_memory.add_message(HumanMessage(content=user_message))
-            self.short_term_memory.add_message(AIMessage(content=assistant_response))
+            self.short_term_memory.add_short_term_memory(HumanMessage(content=user_message))
+            self.short_term_memory.add_short_term_memory(AIMessage(content=assistant_response))
             
             if self.short_term_memory.needs_summary:
                 logger.info(f"[MainAgent] Summary threshold reached, triggering summary")

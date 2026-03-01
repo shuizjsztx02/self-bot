@@ -16,6 +16,12 @@ export interface ToolCall {
   }
 }
 
+export interface LastMessage {
+  role: string
+  content: string | null
+  created_at: string | null
+}
+
 export interface Conversation {
   id: string
   title: string
@@ -25,6 +31,8 @@ export interface Conversation {
   messages: Message[]
   created_at: string
   updated_at: string
+  last_message?: LastMessage
+  message_count?: number
 }
 
 export interface Provider {
