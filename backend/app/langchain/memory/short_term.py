@@ -232,3 +232,64 @@ class ShortTermMemory:
             "utilization": f"{self.utilization:.1%}",
             "pending_summary": self._pending_summary,
         }
+    
+    def get_history_as_turns(self, limit: Optional[int] = None) -> List["ConversationTurn"]:
+        """
+        获取对话历史，转换为 ConversationTurn 格式
+        
+        供 RAG 模块的 QueryRewriter 使用
+        
+        Args:
+            limit: 限制返回的轮次数量
+            
+        Returns:
+            ConversationTurn 列表
+        """
+        from app.langchain.services.rag.rag_types import ConversationTurn
+        
+        messages = self.get_context()
+        turns = []
+        
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                turns.append(ConversationTurn(
+                    role="user",
+                    content=msg.content,
+                ))
+            elif isinstance(msg, AIMessage):
+                turns.append(ConversationTurn(
+                    role="assistant",
+                    content=msg.content,
+                ))
+        
+        if limit:
+            turns = turns[-limit:]
+        
+        return turns
+    
+    def get_context_summary(self, max_tokens: int = 500) -> str:
+        """
+        获取对话历史的文本摘要
+        
+        供 ResearcherAgent 生成搜索上下文
+        
+        Args:
+            max_tokens: 最大 token 数
+            
+        Returns:
+            对话历史的文本摘要
+        """
+        messages = self.get_context(max_tokens=max_tokens)
+        
+        if not messages:
+            return ""
+        
+        context_parts = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                context_parts.append(f"用户: {msg.content}")
+            elif isinstance(msg, AIMessage):
+                content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
+                context_parts.append(f"助手: {content}")
+        
+        return "\n".join(context_parts)

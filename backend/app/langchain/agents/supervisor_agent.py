@@ -143,23 +143,37 @@ class SupervisorAgent:
         conversation_id: Optional[str] = None,
         db_session=None,
     ):
+        from app.langchain.memory import ShortTermMemory
+        from app.config import settings
+        
         self.llm = get_llm(provider, model)
         self.user_id = user_id
         self.conversation_id = conversation_id
         self.db_session = db_session
         
+        self.shared_memory = ShortTermMemory(
+            max_tokens=settings.MEMORY_MAX_TOKENS,
+            summary_threshold=settings.MEMORY_SUMMARY_THRESHOLD,
+            keep_recent_messages=settings.MEMORY_KEEP_RECENT,
+        )
+        
         self.main_agent = MainAgent(
             provider=provider,
             model=model,
             conversation_id=conversation_id,
+            short_term_memory=self.shared_memory,
         )
-        
-        self.researcher_agent = ResearcherAgent(llm=self.llm)
         
         self.rag_agent = RagAgent(
             llm=self.llm,
             user_id=user_id,
             db_session=db_session,
+            short_term_memory=self.shared_memory,
+        )
+        
+        self.researcher_agent = ResearcherAgent(
+            llm=self.llm,
+            short_term_memory=self.shared_memory,
         )
         
         self.intent_classifier = IntentClassifier(llm=self.llm, db_session=db_session)
@@ -174,7 +188,7 @@ class SupervisorAgent:
     
     async def load_history(self, db_session, limit: int = 20) -> int:
         """
-        从数据库加载历史消息到 MainAgent 的短期记忆
+        从数据库加载历史消息到共享记忆
         
         Args:
             db_session: 数据库会话
@@ -183,11 +197,28 @@ class SupervisorAgent:
         Returns:
             加载的消息数量
         """
-        return await self.main_agent.load_history_from_db(
-            db_session=db_session,
-            conversation_id=self.conversation_id,
-            limit=limit,
+        from app.langchain.models.database import Message
+        from sqlalchemy import select
+        from langchain_core.messages import HumanMessage, AIMessage
+        
+        result = await db_session.execute(
+            select(Message)
+            .where(Message.conversation_id == self.conversation_id)
+            .order_by(Message.created_at)
+            .limit(limit)
         )
+        messages = result.scalars().all()
+        
+        self.shared_memory.clear()
+        loaded_count = 0
+        for msg in messages:
+            if msg.role == "user":
+                self.shared_memory.add_short_term_memory(HumanMessage(content=msg.content))
+            elif msg.role == "assistant":
+                self.shared_memory.add_short_term_memory(AIMessage(content=msg.content))
+            loaded_count += 1
+        
+        return loaded_count
     
     async def chat(self, message: str, db=None) -> dict:
         """

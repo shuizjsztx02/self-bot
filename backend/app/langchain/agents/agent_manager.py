@@ -72,7 +72,7 @@ class AgentManager:
                 
                 if history_enabled:
                     try:
-                        agent.main_agent.short_term_memory.clear()
+                        agent.shared_memory.clear()
                         loaded_count = await agent.load_history(db_session, limit=history_limit)
                         logger.info(f"Reloaded {loaded_count} history messages for cached agent: {conversation_id}")
                     except Exception as e:

@@ -27,8 +27,9 @@ class ResearcherAgent:
     2. 工具模式：通过 as_tool() 方法封装为工具
     """
     
-    def __init__(self, llm: Optional[ChatOpenAI] = None):
+    def __init__(self, llm: Optional[ChatOpenAI] = None, short_term_memory=None):
         self._llm = llm
+        self._short_term_memory = short_term_memory
         self._tools = [tavily_search, duckduckgo_search, serpapi_search]
         self._tools_by_name = {t.name: t for t in self._tools}
     
@@ -47,8 +48,9 @@ class ResearcherAgent:
         max_iterations: Optional[int] = None,
     ) -> str:
         """
-        独立执行研究任务
-        供Supervisor直接调用，无需通过工具模式
+        独立执行研究任务（带上下文）
+        
+        如果有对话历史，会先获取上下文，生成更精准的搜索查询
         
         Args:
             topic: 研究主题或问题
@@ -60,8 +62,11 @@ class ResearcherAgent:
         max_iterations = max_iterations or settings.RESEARCHER_MAX_ITERATIONS
         llm = self._get_llm()
         
-        messages = [
-            SystemMessage(content="""你是研究助手，擅长：
+        context = ""
+        if self._short_term_memory:
+            context = self._short_term_memory.get_context_summary(max_tokens=500)
+        
+        system_content = """你是研究助手，擅长：
 1. 深度搜索：使用多种搜索引擎获取全面信息
 2. 信息整合：整合多个来源的信息
 3. 报告生成：生成结构化的研究报告
@@ -71,7 +76,20 @@ class ResearcherAgent:
 注意事项：
 - 优先使用 tavily_search，它提供更准确的搜索结果
 - 如果一个搜索引擎失败，尝试使用其他搜索引擎
-- 整合多个来源的信息，给出全面的回答"""),
+- 整合多个来源的信息，给出全面的回答"""
+
+        if context:
+            system_content += f"""
+
+## 对话历史上下文
+以下是用户之前的对话历史，请参考这些信息来更好地理解用户的研究需求：
+
+{context}
+
+请基于对话历史上下文来理解用户的研究主题，如果主题中包含代词（如"它"、"这个"等），请根据上下文解析其含义。"""
+
+        messages = [
+            SystemMessage(content=system_content),
             HumanMessage(content=topic),
         ]
         

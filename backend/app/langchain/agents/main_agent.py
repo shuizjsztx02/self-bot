@@ -41,6 +41,7 @@ class MainAgent:
         user_name: str = "用户",
         agent_name: str = "智能助手",
         system_prompt: Optional[str] = None,
+        short_term_memory=None,
     ):
         self.provider = provider
         self.model = model
@@ -55,13 +56,18 @@ class MainAgent:
         
         self.summarizer = MemorySummarizer(provider=provider, model=model)
         
-        self.short_term_memory = ShortTermMemory(
-            max_tokens=settings.MEMORY_MAX_TOKENS,
-            summary_threshold=settings.MEMORY_SUMMARY_THRESHOLD,
-            keep_recent_messages=settings.MEMORY_KEEP_RECENT,
-            on_summary_needed=self._generate_summary,
-            on_store_summary=self._store_summary_to_long_term,
-        )
+        if short_term_memory is not None:
+            self.short_term_memory = short_term_memory
+            self._external_memory = True
+        else:
+            self.short_term_memory = ShortTermMemory(
+                max_tokens=settings.MEMORY_MAX_TOKENS,
+                summary_threshold=settings.MEMORY_SUMMARY_THRESHOLD,
+                keep_recent_messages=settings.MEMORY_KEEP_RECENT,
+                on_summary_needed=self._generate_summary,
+                on_store_summary=self._store_summary_to_long_term,
+            )
+            self._external_memory = False
         
         self.long_term_memory = LongTermMemory(
             storage_path=settings.AGENT_MEMORY_PATH,

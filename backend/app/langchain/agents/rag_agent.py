@@ -77,17 +77,19 @@ class RagAgent:
         user_id: Optional[str] = None,
         db_session=None,
         config: Optional[RagAgentConfig] = None,
+        short_term_memory=None,
     ):
         self._llm = llm
         self.user_id = user_id
         self.db_session = db_session
         self.config = config or RagAgentConfig()
         
+        self._short_term_memory = short_term_memory
+        
         self._search_service = None
         self._permission_service = None
         self._kb_service = None
         
-        self._context_manager = None
         self._query_rewriter = None
         self._context_compressor = None
     
@@ -103,7 +105,6 @@ class RagAgent:
             from app.knowledge_base.services.embedding import EmbeddingService
             from app.knowledge_base.vector_store import VectorStoreFactory
             from app.db.session import get_async_session
-            from app.langchain.services.rag.context_manager import ContextManager
             from app.langchain.services.rag.query_rewriter import QueryRewriter
             from app.langchain.services.rag.rag_types import QueryRewriteConfig
             from app.knowledge_base.services.compression import ContextCompressor, CompressionConfig
@@ -122,11 +123,6 @@ class RagAgent:
             )
             self._permission_service = PermissionService(self.db_session)
             self._kb_service = KnowledgeBaseService(self.db_session, vector_store)
-            
-            self._context_manager = ContextManager(
-                max_turns=self.config.max_history_turns,
-                max_tokens=self.config.max_context_tokens // 2,
-            )
             
             self._query_rewriter = QueryRewriter(
                 config=QueryRewriteConfig(
@@ -164,7 +160,12 @@ class RagAgent:
         """
         await self._get_services()
         
-        history = self._context_manager.get_history()
+        if self._short_term_memory:
+            history = self._short_term_memory.get_history_as_turns(
+                limit=self.config.max_history_turns
+            )
+        else:
+            history = []
         
         with trace_step("query_rewrite", {"query": query, "history_len": len(history)}):
             if self.config.enable_query_rewrite:
@@ -194,7 +195,11 @@ class RagAgent:
         with trace_step("metadata_fill", {"results_count": len(all_results)}):
             await self._fill_metadata(all_results)
         
-        conversation_context = self._context_manager.get_context_for_query(query)
+        conversation_context = ""
+        if self._short_term_memory:
+            conversation_context = self._short_term_memory.get_context_summary(
+                max_tokens=self.config.max_context_tokens // 4
+            )
         
         with trace_step("context_compress", {"docs_count": len(all_results)}):
             formatted_context = await self._compress_context(
@@ -309,12 +314,8 @@ class RagAgent:
         """
         process_result = await self.process_query(query, kb_ids, top_k)
         
-        self._context_manager.add_user_message(query)
-        if process_result.rewritten_query != query:
-            self._context_manager.update_last_user_message(
-                original=query,
-                rewritten=process_result.rewritten_query,
-            )
+        if self._short_term_memory:
+            self._short_term_memory.add_short_term_memory(HumanMessage(content=query))
         
         return RagChatResult(
             query=query,
@@ -334,7 +335,12 @@ class RagAgent:
         logger.info(f"[RagAgent] chat_with_rag_stream start: query='{query[:50]}...', kb_ids={kb_ids}")
         await self._get_services()
         
-        history = self._context_manager.get_history()
+        if self._short_term_memory:
+            history = self._short_term_memory.get_history_as_turns(
+                limit=self.config.max_history_turns
+            )
+        else:
+            history = []
         logger.info(f"[RagAgent] History length: {len(history)}")
         
         if self.config.enable_query_rewrite:
@@ -376,7 +382,8 @@ class RagAgent:
         else:
             logger.warning(f"[RagAgent] No documents found for query")
         
-        self._context_manager.add_user_message(query)
+        if self._short_term_memory:
+            self._short_term_memory.add_short_term_memory(HumanMessage(content=query))
         
         yield {
             "type": "rag_context",
@@ -386,9 +393,9 @@ class RagAgent:
         logger.info(f"[RagAgent] chat_with_rag_stream complete")
     
     def add_assistant_message(self, content: str):
-        """添加助手消息到上下文"""
-        if self._context_manager:
-            self._context_manager.add_assistant_message(content)
+        """添加助手消息到共享 memory"""
+        if self._short_term_memory:
+            self._short_term_memory.add_short_term_memory(AIMessage(content=content))
     
     async def search(
         self,
