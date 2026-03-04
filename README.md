@@ -64,22 +64,24 @@
 - 会话历史持久化
 
 ### 🎭 Agents 编排
-
 ![Agents 架构图](image.png)
-
 > 待完善内容：
 > - 意图识别模块外挂 NLP 文本分类小模型，提高语义理解能力和分类准确度
 > - 置信度低时并行路由策略 + 多分支结果选优
 > - 新旧架构迭代尚未彻底完成，使用 LangGraph 重新编排后，未经过可靠的 A/B 测试
 
-### 🧱 架构选型
+### 🧱 架构设计
 
 - LangChain 1.0 框架使用（Agent、Tools、Chains、Prompt、LLM、Middleware）
 - LangGraph 使用（State、Graph 编排、ToolNode、Checkpointing）
 - LangSmith 启用（全链路 Tracer、上下文观测和 Debug 调试）
 - React + Vite 前端实现，FastAPI 后端实现
 
-> 待完善：Middleware 深度扩展，当前只用于日志记录，后续考虑加入自动脱敏、安全检查等
+> 架构新特性集成使用:selfqueryretriever模块引入、Middleware 深度扩展 (当前只用于日志记录，后续考虑加入自动脱敏、安全检查等)
+> 项目全链缓存引入: 缓存意图分类，工具调用信息， 向量检索
+> 分析项目各阶段实现情况，增加熔断与降级处理，增加重试和回退策略
+> 参考gemini对话系统, 在回答的结尾增加 ”下一步建议“
+> 自进化agent的多步实现
 
 ## 🏗️ 项目架构
 
