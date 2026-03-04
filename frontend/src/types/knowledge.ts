@@ -308,3 +308,77 @@ export interface GroupMember {
   is_manager: boolean
   joined_at: string
 }
+
+export interface UserListItem {
+  id: string
+  name: string
+  email: string
+  department: string | null
+  level: number
+  is_active: boolean
+  is_superuser: boolean
+  created_at: string
+}
+
+export interface UserListResponse {
+  items: UserListItem[]
+  total: number
+}
+
+export interface UserCreate {
+  name: string
+  email: string
+  password: string
+  department?: string
+  level?: number
+  is_superuser?: boolean
+}
+
+export interface UserUpdate {
+  name?: string
+  department?: string
+  level?: number
+}
+
+export interface UserDetail {
+  id: string
+  name: string
+  email: string
+  department: string | null
+  level: number
+  is_active: boolean
+  is_superuser: boolean
+  created_at: string
+  updated_at: string
+}
+
+export const USER_LEVEL_LABELS: Record<number, string> = {
+  1: '查看者',
+  2: '编辑者',
+  3: '管理员',
+  4: '所有者',
+}
+
+export interface PermissionInfo {
+  id: string
+  kb_id: string
+  kb_name: string
+  role: string
+  folder_id: string | null
+  granted_by: string | null
+  granted_at: string
+  expires_at: string | null
+  source: string
+}
+
+export interface PermissionListResponse {
+  items: PermissionInfo[]
+  total: number
+}
+
+export interface PermissionGrant {
+  kb_id: string
+  role: string
+  folder_id?: string
+  expires_at?: string
+}

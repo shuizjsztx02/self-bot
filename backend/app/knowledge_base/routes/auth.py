@@ -9,7 +9,7 @@ from app.auth.dependencies import get_current_user, get_current_active_user
 from app.auth.service import AuthService
 from app.auth.jwt import jwt_handler
 from app.knowledge_base.schemas import (
-    UserCreate, UserResponse, UserLogin, TokenResponse, 
+    UserCreate, UserUpdate, UserResponse, UserLogin, TokenResponse, 
     PasswordChange, RefreshTokenBody
 )
 
@@ -56,6 +56,16 @@ async def login(
         refresh_token=refresh_token,
         token_type="bearer",
         expires_in=30 * 60,
+        user=UserResponse(
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            department=user.department,
+            level=user.level,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser,
+            created_at=user.created_at,
+        ),
     )
 
 
@@ -117,6 +127,22 @@ async def get_current_user_info(
     current_user = Depends(get_current_active_user),
 ):
     return current_user
+
+
+@router.put("/me", response_model=UserResponse)
+async def update_current_user_info(
+    update_data: UserUpdate,
+    current_user = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    auth_service = AuthService(db)
+    updated_user = await auth_service.update_user(
+        user_id=current_user.id,
+        name=update_data.name,
+        department=update_data.department,
+        level=update_data.level,
+    )
+    return updated_user
 
 
 @router.put("/me/password")

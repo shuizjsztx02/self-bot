@@ -2,10 +2,15 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import ChatPage from './pages/ChatPage'
 import SettingsPage from './pages/SettingsPage'
+import ProfilePage from './pages/ProfilePage'
 import KnowledgeBasePage from './pages/KnowledgeBasePage'
 import KnowledgeBaseDetailPage from './pages/KnowledgeBaseDetailPage'
 import SearchPage from './pages/SearchPage'
 import LoginPage from './pages/LoginPage'
+import UserGroupsPage from './pages/UserGroupsPage'
+import UserGroupDetailPage from './pages/UserGroupDetailPage'
+import UsersPage from './pages/UsersPage'
+import UserDetailPage from './pages/UserDetailPage'
 import ProtectedRoute from './components/ProtectedRoute'
 import ToastContainer from './components/Toast'
 import { useAuthStore, initAuth, startTokenRefreshTimer, stopTokenRefreshTimer } from './stores/authStore'
@@ -64,6 +69,46 @@ function App() {
           element={
             <ProtectedRoute>
               <SettingsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <ProfilePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/user-groups"
+          element={
+            <ProtectedRoute>
+              <UserGroupsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/user-groups/:groupId"
+          element={
+            <ProtectedRoute>
+              <UserGroupDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/users"
+          element={
+            <ProtectedRoute>
+              <UsersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/users/:userId"
+          element={
+            <ProtectedRoute>
+              <UserDetailPage />
             </ProtectedRoute>
           }
         />

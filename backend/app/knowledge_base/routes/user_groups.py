@@ -302,7 +302,8 @@ async def add_group_member(
     group_result = await db.execute(
         select(UserGroup).where(UserGroup.id == group_id)
     )
-    if not group_result.scalar_one_or_none():
+    group = group_result.scalar_one_or_none()
+    if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Group not found",
@@ -311,7 +312,8 @@ async def add_group_member(
     user_result = await db.execute(
         select(User).where(User.id == data.user_id)
     )
-    if not user_result.scalar_one_or_none():
+    user = user_result.scalar_one_or_none()
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
@@ -335,6 +337,10 @@ async def add_group_member(
         is_manager=data.is_manager,
     )
     db.add(member)
+    
+    if not user.department:
+        user.department = group.name
+    
     await db.commit()
     
     return {"message": "Member added successfully"}

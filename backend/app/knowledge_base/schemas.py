@@ -18,7 +18,13 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6, max_length=100)
     department: Optional[str] = None
-    level: int = Field(default=1, ge=1, le=10)
+    level: int = Field(default=1, ge=1, le=4)
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    department: Optional[str] = Field(None, max_length=100)
+    level: Optional[int] = Field(None, ge=1, le=4)
 
 
 class UserResponse(BaseModel):
@@ -54,6 +60,7 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int
+    user: Optional[UserResponse] = None
 
 
 class UserGroupCreate(BaseModel):

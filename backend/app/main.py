@@ -35,6 +35,7 @@ from app.knowledge_base.routes import (
     user_groups_router,
     operation_logs_router,
     attribute_rules_router,
+    users_router,
 )
 from app.core.device_utils import log_device_status
 
@@ -105,6 +106,7 @@ app.include_router(search_router, prefix="/api")
 app.include_router(user_groups_router, prefix="/api")
 app.include_router(operation_logs_router, prefix="/api")
 app.include_router(attribute_rules_router, prefix="/api")
+app.include_router(users_router, prefix="/api")
 
 setup_langsmith()
 

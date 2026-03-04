@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useChatStore } from '../stores/chatStore'
 import { useAuthStore } from '../stores/authStore'
-import { Plus, MessageSquare, Trash2, Settings, Database, Search, BookOpen, Pencil, Check, X, User, LogOut, ChevronDown } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Settings, Database, Search, BookOpen, Pencil, Check, X, User, LogOut, ChevronDown, UserCircle, Users } from 'lucide-react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 export default function Sidebar() {
@@ -107,6 +107,15 @@ export default function Sidebar() {
                   </div>
                   
                   <Link
+                    to="/profile"
+                    onClick={() => setShowUserMenu(false)}
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700"
+                  >
+                    <UserCircle size={16} />
+                    个人资料
+                  </Link>
+                  
+                  <Link
                     to="/settings"
                     onClick={() => setShowUserMenu(false)}
                     className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700"
@@ -168,6 +177,34 @@ export default function Sidebar() {
           <Search size={18} />
           知识检索
         </Link>
+
+        {user?.is_superuser && (
+          <Link
+            to="/users"
+            className={`flex items-center gap-2 rounded-lg p-3 text-sm font-medium transition-colors ${
+              isActive('/users') || location.pathname.startsWith('/users/')
+                ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+                : 'text-slate-700 hover:bg-slate-200 dark:text-slate-200 dark:hover:bg-slate-800'
+            }`}
+          >
+            <User size={18} />
+            用户管理
+          </Link>
+        )}
+
+        {user?.is_superuser && (
+          <Link
+            to="/user-groups"
+            className={`flex items-center gap-2 rounded-lg p-3 text-sm font-medium transition-colors ${
+              isActive('/user-groups')
+                ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+                : 'text-slate-700 hover:bg-slate-200 dark:text-slate-200 dark:hover:bg-slate-800'
+            }`}
+          >
+            <Users size={18} />
+            用户组管理
+          </Link>
+        )}
       </div>
 
       <div className="mx-2 border-t border-slate-200 dark:border-slate-700" />

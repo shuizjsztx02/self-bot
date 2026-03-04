@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Plus, Users, Edit, Trash2, UserPlus, UserMinus } from 'lucide-react'
-import knowledgeApi from '../services/knowledgeApi'
+import { useNavigate } from 'react-router-dom'
+import { Plus, Users, Edit, Trash2, UserPlus, UserMinus, MessageSquare } from 'lucide-react'
+import { knowledgeApi } from '../services/knowledgeApi'
 import { getErrorMessage } from '../utils/errorHandler'
+import Sidebar from '../components/Sidebar'
+import UserSelector from '../components/UserSelector'
+import type { User } from '../types/knowledge'
 
 interface UserGroup {
   id: string
@@ -22,6 +26,7 @@ interface GroupMember {
 }
 
 export default function UserGroupsPage() {
+  const navigate = useNavigate()
   const [groups, setGroups] = useState<UserGroup[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,7 +36,7 @@ export default function UserGroupsPage() {
   const [members, setMembers] = useState<GroupMember[]>([])
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupDesc, setNewGroupDesc] = useState('')
-  const [newMemberId, setNewMemberId] = useState('')
+  const [selectedUser, setSelectedUser] = useState<User | null>(null)
   const [newMemberIsManager, setNewMemberIsManager] = useState(false)
 
   useEffect(() => {
@@ -104,8 +109,8 @@ export default function UserGroupsPage() {
   }
 
   const handleAddMember = async () => {
-    if (!newMemberId.trim()) {
-      setError('请输入用户ID')
+    if (!selectedUser) {
+      setError('请选择要添加的用户')
       return
     }
 
@@ -115,10 +120,10 @@ export default function UserGroupsPage() {
     setError(null)
     try {
       await knowledgeApi.addGroupMember(selectedGroup.id, {
-        user_id: newMemberId.trim(),
+        user_id: selectedUser.id,
         is_manager: newMemberIsManager,
       })
-      setNewMemberId('')
+      setSelectedUser(null)
       setNewMemberIsManager(false)
       handleViewGroup(selectedGroup)
     } catch (e) {
@@ -149,19 +154,33 @@ export default function UserGroupsPage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="border-b bg-white px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">用户组管理</h1>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-          >
-            <Plus className="h-4 w-4" />
-            创建用户组
-          </button>
+    <div className="flex h-screen bg-slate-100 dark:bg-slate-900">
+      <Sidebar />
+      
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="border-b bg-white px-6 py-4 dark:bg-slate-800 dark:border-slate-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => navigate('/')}
+                className="flex items-center gap-2 text-gray-600 hover:text-primary-600 transition-colors dark:text-slate-400 dark:hover:text-primary-400"
+                title="返回聊天"
+              >
+                <MessageSquare className="h-5 w-5" />
+                <span className="text-sm font-medium">返回聊天</span>
+              </button>
+              <div className="h-6 w-px bg-gray-200 dark:bg-slate-600" />
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">用户组管理</h1>
+            </div>
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
+            >
+              <Plus className="h-4 w-4" />
+              创建用户组
+            </button>
+          </div>
         </div>
-      </div>
 
       <div className="flex-1 p-6 overflow-y-auto">
         {error && (
@@ -183,7 +202,8 @@ export default function UserGroupsPage() {
             {groups.map((group) => (
               <div
                 key={group.id}
-                className="border rounded-lg p-4 hover:shadow-md transition-shadow"
+                className="border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
+                onClick={() => navigate(`/user-groups/${group.id}`)}
               >
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
@@ -291,6 +311,8 @@ export default function UserGroupsPage() {
                       setShowDetailModal(false)
                       setSelectedGroup(null)
                       setMembers([])
+                      setSelectedUser(null)
+                      setNewMemberIsManager(false)
                     }}
                     className="text-gray-500 hover:text-gray-700 text-2xl"
                   >
@@ -302,30 +324,32 @@ export default function UserGroupsPage() {
               <div className="flex-1 overflow-y-auto p-4">
                 <div className="mb-4">
                   <h3 className="font-medium mb-2">添加成员</h3>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newMemberId}
-                      onChange={(e) => setNewMemberId(e.target.value)}
-                      placeholder="用户ID"
-                      className="flex-1 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  <div className="space-y-2">
+                    <UserSelector
+                      selectedUserId={selectedUser?.id || null}
+                      onSelect={(user) => setSelectedUser(user)}
+                      excludeIds={members.map((m) => m.user_id)}
+                      placeholder="搜索用户姓名、邮箱或部门..."
                     />
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={newMemberIsManager}
-                        onChange={(e) => setNewMemberIsManager(e.target.checked)}
-                        className="rounded border-gray-300 text-blue-500 focus:ring-blue-500"
-                      />
-                      <span className="text-sm">管理员</span>
-                    </label>
-                    <button
-                      onClick={handleAddMember}
-                      disabled={isLoading}
-                      className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
-                    >
-                      <UserPlus className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center gap-4">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={newMemberIsManager}
+                          onChange={(e) => setNewMemberIsManager(e.target.checked)}
+                          className="rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-600 dark:text-slate-400">设为组管理员</span>
+                      </label>
+                      <button
+                        onClick={handleAddMember}
+                        disabled={isLoading || !selectedUser}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2"
+                      >
+                        <UserPlus className="h-4 w-4" />
+                        添加成员
+                      </button>
+                    </div>
                   </div>
                 </div>
                 
@@ -367,6 +391,7 @@ export default function UserGroupsPage() {
             </div>
           </div>
       )}
+      </div>
     </div>
   )
 }

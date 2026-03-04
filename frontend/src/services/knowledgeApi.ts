@@ -24,6 +24,14 @@ import type {
   CompressionSearchResponse,
   UserGroup,
   UserGroupDetail,
+  UserListItem,
+  UserListResponse,
+  UserCreate,
+  UserUpdate,
+  UserDetail,
+  PermissionInfo,
+  PermissionListResponse,
+  PermissionGrant,
 } from '../types/knowledge'
 import { throwApiError } from '../utils/errorHandler'
 
@@ -358,6 +366,15 @@ export const knowledgeApi = {
     }
   },
 
+  updateProfile: async (data: { name?: string; department?: string; level?: number }): Promise<User> => {
+    try {
+      const response = await api.put<User>('/auth/me', data)
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
   refreshToken: async (refreshToken: string): Promise<AuthResponse> => {
     try {
       const response = await api.post<AuthResponse>('/auth/refresh', { refresh_token: refreshToken })
@@ -370,6 +387,106 @@ export const knowledgeApi = {
   changePassword: async (data: { current_password: string; new_password: string }): Promise<void> => {
     try {
       await api.put('/auth/me/password', data)
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  // ==================== 用户管理 ====================
+
+  listUsers: async (params?: { skip?: number; limit?: number; search?: string }): Promise<UserListResponse> => {
+    try {
+      const response = await api.get<UserListResponse>('/users', { params })
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  listAllUsers: async (): Promise<UserListItem[]> => {
+    try {
+      const response = await api.get<UserListItem[]>('/users/all')
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  createUser: async (data: UserCreate): Promise<UserDetail> => {
+    try {
+      const response = await api.post<UserDetail>('/users', data)
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  getUser: async (userId: string): Promise<UserDetail> => {
+    try {
+      const response = await api.get<UserDetail>(`/users/${userId}`)
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  updateUser: async (userId: string, data: UserUpdate): Promise<UserDetail> => {
+    try {
+      const response = await api.put<UserDetail>(`/users/${userId}`, data)
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  updateUserLevel: async (userId: string, level: number): Promise<UserDetail> => {
+    try {
+      const response = await api.put<UserDetail>(`/users/${userId}/level`, { level })
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  updateUserStatus: async (userId: string, isActive: boolean): Promise<UserDetail> => {
+    try {
+      const response = await api.put<UserDetail>(`/users/${userId}/status`, { is_active: isActive })
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  updateUserSuperuser: async (userId: string, isSuperuser: boolean): Promise<UserDetail> => {
+    try {
+      const response = await api.put<UserDetail>(`/users/${userId}/superuser`, { is_superuser: isSuperuser })
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  getUserPermissions: async (userId: string): Promise<PermissionListResponse> => {
+    try {
+      const response = await api.get<PermissionListResponse>(`/users/${userId}/permissions`)
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  grantUserPermission: async (userId: string, data: PermissionGrant): Promise<PermissionInfo> => {
+    try {
+      const response = await api.post<PermissionInfo>(`/users/${userId}/permissions`, data)
+      return response.data
+    } catch (error) {
+      throwApiError(error)
+    }
+  },
+
+  revokeUserPermission: async (userId: string, permissionId: string): Promise<void> => {
+    try {
+      await api.delete(`/users/${userId}/permissions/${permissionId}`)
     } catch (error) {
       throwApiError(error)
     }
