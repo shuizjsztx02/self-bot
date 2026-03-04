@@ -12,6 +12,7 @@ from app.langchain.agents.agent_manager import agent_manager
 from app.langchain.tools import get_all_tools
 from app.config import settings
 from app.langchain.models.database import Conversation, Message, Memory, Skill as SkillModel
+from app.langchain.graph import should_use_langgraph, get_agent
 from .schemas import (
     ChatRequest,
     ChatResponse,
@@ -51,11 +52,16 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         await db.commit()
         await db.refresh(conversation)
     
-    agent = await agent_manager.get_agent(
+    use_langgraph = should_use_langgraph()
+    logger.info(f"[API] Using {'LangGraph' if use_langgraph else 'legacy'} architecture")
+    
+    agent = await get_agent(
         conversation_id=conversation.id,
+        user_id=None,
         db_session=db,
         provider=request.provider or conversation.provider,
         model=request.model or conversation.model,
+        use_langgraph=use_langgraph,
     )
     
     try:
@@ -83,6 +89,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             tool_calls=result.get("tool_calls"),
         )
     except Exception as e:
+        logger.error(f"[API] Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -128,11 +135,16 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     logger.info(f"[API] Saved user message for conversation: {conversation.id}")
     
-    agent = await agent_manager.get_agent(
+    use_langgraph = should_use_langgraph()
+    logger.info(f"[API] Using {'LangGraph' if use_langgraph else 'legacy'} architecture for stream")
+    
+    agent = await get_agent(
         conversation_id=conversation.id,
+        user_id=None,
         db_session=db,
         provider=request.provider or conversation.provider,
         model=request.model or conversation.model,
+        use_langgraph=use_langgraph,
     )
     
     async def generate():
@@ -145,12 +157,19 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
                 'provider': conversation.provider,
                 'model': conversation.model,
                 'created_at': conversation.created_at.isoformat() if conversation.created_at else None,
+                'architecture': 'langgraph' if use_langgraph else 'legacy',
             }, ensure_ascii=False)}\n\n"
             
-            async for chunk in agent.chat_stream(request.message, db=db):
-                if chunk.get("type") == "content":
-                    full_response += chunk.get("content", "")
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            if use_langgraph and hasattr(agent, 'chat_stream'):
+                async for chunk in agent.chat_stream(request.message, db=db):
+                    if chunk.get("type") == "content":
+                        full_response += chunk.get("content", "")
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            else:
+                async for chunk in agent.chat_stream(request.message, db=db):
+                    if chunk.get("type") == "content":
+                        full_response += chunk.get("content", "")
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             
             assistant_message = Message(
                 conversation_id=conversation.id,
@@ -524,3 +543,101 @@ async def search_memory(
 async def get_memory_stats():
     stats = agent_manager.get_stats()
     return stats
+
+
+@router.get("/metrics")
+async def get_metrics():
+    """
+    获取 LangGraph 指标
+    
+    返回 Prometheus 格式的指标数据
+    """
+    from app.langchain.graph.metrics import get_metrics_collector
+    from fastapi.responses import Response
+    
+    collector = get_metrics_collector()
+    
+    prometheus_metrics = collector.get_prometheus_metrics()
+    if prometheus_metrics:
+        return Response(
+            content=prometheus_metrics,
+            media_type="text/plain; version=0.0.4",
+        )
+    
+    return {"metrics": collector.get_metrics()}
+
+
+@router.get("/metrics/summary")
+async def get_metrics_summary():
+    """
+    获取指标摘要
+    
+    返回 JSON 格式的指标摘要
+    """
+    from app.langchain.graph.metrics import get_metrics_collector
+    
+    collector = get_metrics_collector()
+    return collector.get_metrics()
+
+
+@router.get("/ab-test/analyze")
+async def analyze_ab_test():
+    """
+    分析 A/B 测试结果
+    
+    对比新旧架构的性能差异
+    """
+    from app.langchain.graph.metrics import get_ab_test_analyzer
+    
+    analyzer = get_ab_test_analyzer()
+    return analyzer.analyze()
+
+
+@router.get("/architecture/status")
+async def get_architecture_status():
+    """
+    获取架构状态
+    
+    返回当前使用的架构和配置
+    """
+    from app.langchain.graph import GraphFeatureFlags, get_switch_manager
+    
+    manager = get_switch_manager()
+    
+    return {
+        "use_langgraph": GraphFeatureFlags.USE_LANGGRAPH,
+        "traffic_ratio": GraphFeatureFlags.LANGGRAPH_TRAFFIC_RATIO,
+        "parallel_enabled": GraphFeatureFlags.LANGGRAPH_PARALLEL,
+        "metrics": manager.get_metrics(),
+    }
+
+
+@router.post("/architecture/switch")
+async def switch_architecture(
+    use_langgraph: bool = Body(..., embed=True),
+    traffic_ratio: Optional[float] = Body(None, embed=True),
+):
+    """
+    切换架构
+    
+    Args:
+        use_langgraph: 是否使用 LangGraph
+        traffic_ratio: 流量比例 (0.0-1.0)
+    """
+    from app.langchain.graph import GraphFeatureFlags, get_switch_manager
+    
+    manager = get_switch_manager()
+    
+    if use_langgraph:
+        manager.switch_to_new("API request")
+    else:
+        manager.switch_to_old("API request")
+    
+    if traffic_ratio is not None:
+        GraphFeatureFlags.set_traffic_ratio(traffic_ratio)
+    
+    return {
+        "status": "success",
+        "use_langgraph": GraphFeatureFlags.USE_LANGGRAPH,
+        "traffic_ratio": GraphFeatureFlags.LANGGRAPH_TRAFFIC_RATIO,
+    }

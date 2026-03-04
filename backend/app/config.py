@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     
     AGENT_MAX_ITERATIONS: int = 80
     RESEARCHER_MAX_ITERATIONS: int = 50
+    
+    USE_LANGGRAPH: bool = True
+    LANGGRAPH_PARALLEL: bool = False
+    LANGGRAPH_TRAFFIC_RATIO: float = 1.0
 
     class Config:
         env_file = ".env"
