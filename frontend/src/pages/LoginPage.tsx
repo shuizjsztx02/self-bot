@@ -1,17 +1,22 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { LogIn, UserPlus, AlertCircle, CheckCircle } from 'lucide-react'
-import { knowledgeApi } from '../services/knowledgeApi'
+import { useAuthStore } from '../stores/authStore'
 import { toast } from '../components/Toast'
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const { login, register } = useAuthStore()
+  
   const [isLogin, setIsLogin] = useState(true)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [errors, setErrors] = useState<{ name?: string; email?: string; password?: string }>({})
+
+  const from = (location.state as { from?: string })?.from || '/'
 
   const validateName = (value: string): string | undefined => {
     if (!value.trim()) return '请输入姓名'
@@ -76,15 +81,11 @@ export default function LoginPage() {
 
     try {
       if (isLogin) {
-        const response = await knowledgeApi.login({ email, password })
-        localStorage.setItem('token', response.access_token)
-        if (response.refresh_token) {
-          localStorage.setItem('refreshToken', response.refresh_token)
-        }
+        await login(email, password)
         toast.success('登录成功', '欢迎回来！')
-        navigate('/knowledge')
+        navigate(from, { replace: true })
       } else {
-        await knowledgeApi.register({ name: name.trim(), email: email.trim(), password })
+        await register(name.trim(), email.trim(), password)
         toast.success('注册成功', '请登录')
         setIsLogin(true)
         setPassword('')
@@ -273,15 +274,6 @@ export default function LoginPage() {
                 </button>
               </p>
             )}
-          </div>
-
-          <div className="mt-4 text-center">
-            <button
-              onClick={() => navigate('/')}
-              className="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400"
-            >
-              返回首页
-            </button>
           </div>
         </div>
       </div>

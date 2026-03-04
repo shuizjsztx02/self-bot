@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useChatStore } from '../stores/chatStore'
-import { Plus, MessageSquare, Trash2, Settings, Database, Search, BookOpen, Pencil, Check, X } from 'lucide-react'
-import { Link, useLocation } from 'react-router-dom'
+import { useAuthStore } from '../stores/authStore'
+import { Plus, MessageSquare, Trash2, Settings, Database, Search, BookOpen, Pencil, Check, X, User, LogOut, ChevronDown } from 'lucide-react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 export default function Sidebar() {
   const location = useLocation()
+  const navigate = useNavigate()
   const {
     conversations,
     currentConversation,
@@ -14,9 +16,12 @@ export default function Sidebar() {
     updateConversation,
     clearCurrentConversation,
   } = useChatStore()
-
+  
+  const { user, logout } = useAuthStore()
+  
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  const [showUserMenu, setShowUserMenu] = useState(false)
 
   useEffect(() => {
     loadConversations()
@@ -70,9 +75,63 @@ export default function Sidebar() {
   return (
     <div className="flex h-full w-64 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900">
       <div className="flex items-center justify-between border-b border-slate-200 p-4 dark:border-slate-700">
-        <h1 className="text-lg font-bold text-primary-600 dark:text-primary-400">
-          Self-Bot
-        </h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-lg font-bold text-primary-600 dark:text-primary-400">
+            Self-Bot
+          </h1>
+          
+          <div className="relative">
+            <button
+              onClick={() => setShowUserMenu(!showUserMenu)}
+              className="flex items-center gap-1 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-700"
+              title="账号管理"
+            >
+              <User size={18} />
+              <ChevronDown size={14} />
+            </button>
+            
+            {showUserMenu && (
+              <>
+                <div 
+                  className="fixed inset-0 z-10" 
+                  onClick={() => setShowUserMenu(false)}
+                />
+                <div className="absolute left-0 top-full z-20 mt-1 w-48 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800">
+                  <div className="border-b border-slate-200 px-4 py-2 dark:border-slate-600">
+                    <p className="text-sm font-medium text-slate-900 dark:text-white">
+                      {user?.name || '用户'}
+                    </p>
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                      {user?.email || ''}
+                    </p>
+                  </div>
+                  
+                  <Link
+                    to="/settings"
+                    onClick={() => setShowUserMenu(false)}
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700"
+                  >
+                    <Settings size={16} />
+                    设置
+                  </Link>
+                  
+                  <button
+                    onClick={() => {
+                      setShowUserMenu(false)
+                      logout()
+                      navigate('/login')
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-slate-100 dark:text-red-400 dark:hover:bg-slate-700"
+                  >
+                    <LogOut size={16} />
+                    退出登录
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+        
         <Link
           to="/settings"
           className={`rounded-lg p-2 transition-colors ${

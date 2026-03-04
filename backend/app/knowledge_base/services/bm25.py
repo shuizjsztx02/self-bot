@@ -13,6 +13,9 @@ import os
 from collections import Counter
 from pathlib import Path
 
+import jieba
+import jieba.analyse
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,23 +61,16 @@ class BM25Index:
     def _tokenize(self, text: str) -> List[str]:
         """
         分词函数
-        支持中英文混合文本
+        使用 jieba 进行中文分词，支持中英文混合文本
         """
         text = text.lower()
         
-        chinese_pattern = r'[\u4e00-\u9fff]+'
-        english_pattern = r'[a-z0-9]+'
+        tokens = list(jieba.cut(text, cut_all=False))
         
-        chinese_chars = re.findall(chinese_pattern, text)
-        chinese_tokens = []
-        for chars in chinese_chars:
-            chinese_tokens.extend(list(chars))
+        tokens = [t.strip() for t in tokens if t.strip() and len(t.strip()) > 0]
         
-        english_tokens = re.findall(english_pattern, text)
-        
-        tokens = chinese_tokens + english_tokens
-        
-        tokens = [t for t in tokens if len(t) > 0]
+        punctuation_pattern = r'^[^\w\s]+$'
+        tokens = [t for t in tokens if not re.match(punctuation_pattern, t)]
         
         return tokens
     
