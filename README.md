@@ -64,11 +64,71 @@
 - 会话历史持久化
 
 ### 🎭 Agents 编排
-![Agents 架构图](image.png)
+API 请求
+    │
+    ▼
+AgentManager.get_agent(conversation_id, db)
+    │
+    ├─ 缓存命中 → 返回缓存的 LangGraphService
+    │
+    └─ 缓存未命中 → 创建 LangGraphService
+         │
+         ├─ 创建 ShortTermMemory (共享记忆)
+         ├─ 创建 LongTermMemory (长期记忆)
+         ├─ 创建 MemorySummarizer (摘要生成)
+         └─ load_history() 加载历史消息
+    │
+    ▼
+LangGraphService.chat(message)
+    │
+    ├─ set_shared_memory() 设置 ContextVar
+    ├─ set_long_term_memory() 设置 ContextVar
+    │
+    ▼
+SupervisorGraphRunner.run(query, history_messages)
+    │
+    ├─ create_initial_state() 创建初始状态
+    │
+    ▼
+LangGraph 图执行
+    │
+    ├─ intent_node (意图分类)
+    │   └─ IntentClassifier.classify()
+    │
+    ├─ 路由决策 (根据 confidence)
+    │   ├─ ≥ 0.65: 单路径 (rag_node / search_node / main_node)
+    │   └─ < 0.65: 并行 (parallel_search_node)
+    │
+    ├─ rag_node (RAG 检索)
+    │   └─ RagService.process_query()
+    │       ├─ QueryRewriter.rewrite()
+    │       ├─ SearchService.cross_hybrid_search()
+    │       └─ ContextCompressor.compress()
+    │
+    ├─ search_node (互联网搜索)
+    │   └─ SearchService.research()
+    │
+    ├─ main_node (响应生成)
+    │   └─ ChatService.chat()
+    │       ├─ 加载 MCP 工具
+    │       ├─ 构建系统提示
+    │       ├─ 获取历史上下文 (从 shared_memory)
+    │       └─ 调用 LLM
+    │
+    └─ finalize_node (收尾)
+    │
+    ▼
+更新记忆
+    │
+    ├─ conversation_memory.append(message)
+    ├─ shared_memory.add_short_term_memory(message)
+    └─ 触发摘要 (如果超过阈值)
+    │
+    ▼
+返回响应
+
 > 待完善：
 > - 意图识别模块外挂 NLP 文本分类小模型，提高语义理解能力和分类准确度
-> - 置信度低时并行路由策略 + 多分支结果选优
-> - 新旧架构迭代尚未彻底完成，使用 LangGraph 重新编排后，未经过可靠的 A/B 测试
 > - 增加reflection机制, 完善循环迭代, 提高回答质量和稳定性
 
 ### 🧱 架构设计
@@ -84,8 +144,8 @@
 > - 分析项目各阶段实现情况，增加熔断与降级处理，增加重试和回退策略
 > - 参考gemini对话系统, 在回答的结尾增加 ”下一步建议“
 > - 自进化agent的多步实现
-> - openclaw借鉴: 长期记忆、多渠道接入、定时任务、skills注册中心， 用户认证和用户隔离
-，以及我希望在http://localhost:3000/ 页面 左上角Self-Bot的右侧空白处加一个账号管理的emoji
+> - openclaw借鉴: 长期记忆、多渠道接入、定时任务、skills注册中心
+
 ## 🏗️ 项目架构
 
 ```

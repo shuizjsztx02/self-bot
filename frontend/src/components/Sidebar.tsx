@@ -79,6 +79,12 @@ export default function Sidebar() {
           <h1 className="text-lg font-bold text-primary-600 dark:text-primary-400">
             Self-Bot
           </h1>
+        </div>
+        
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-600 dark:text-slate-300">
+            {user?.name || '用户'} 您好！
+          </span>
           
           <div className="relative">
             <button
@@ -96,7 +102,7 @@ export default function Sidebar() {
                   className="fixed inset-0 z-10" 
                   onClick={() => setShowUserMenu(false)}
                 />
-                <div className="absolute left-0 top-full z-20 mt-1 w-48 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800">
+                <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800">
                   <div className="border-b border-slate-200 px-4 py-2 dark:border-slate-600">
                     <p className="text-sm font-medium text-slate-900 dark:text-white">
                       {user?.name || '用户'}
@@ -140,17 +146,6 @@ export default function Sidebar() {
             )}
           </div>
         </div>
-        
-        <Link
-          to="/settings"
-          className={`rounded-lg p-2 transition-colors ${
-            isActive('/settings')
-              ? 'bg-primary-100 text-primary-600 dark:bg-primary-900/30'
-              : 'text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-700'
-          }`}
-        >
-          <Settings size={18} />
-        </Link>
       </div>
 
       <div className="space-y-1 p-2">
