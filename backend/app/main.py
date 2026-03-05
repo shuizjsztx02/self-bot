@@ -80,7 +80,40 @@ async def lifespan(app: FastAPI):
         print("   如需启用，请在 .env 中设置 PRELOAD_MCP_TOOLS=true")
         print("=" * 50 + "\n")
     
+    # 🆕 自进化系统集成：启动EvolutionMonitor
+    from app.evolution import get_evolution_monitor, evolution_settings
+    
+    if evolution_settings.EVOLUTION_ENABLED:
+        print("\n" + "=" * 50)
+        print("启动自进化系统...")
+        print("=" * 50)
+        
+        monitor = get_evolution_monitor()
+        await monitor.start()
+        
+        print("✅ 自进化系统已启动")
+        print(f"   - 检查间隔: {evolution_settings.EVOLUTION_CHECK_INTERVAL_HOURS}小时")
+        print(f"   - 分析天数: {evolution_settings.EVOLUTION_ANALYSIS_DAYS}天")
+        print("=" * 50 + "\n")
+    else:
+        print("\n" + "=" * 50)
+        print("⚠️ 自进化系统已禁用 (EVOLUTION_ENABLED=False)")
+        print("   如需启用，请在 .env 中设置 EVOLUTION_ENABLED=true")
+        print("=" * 50 + "\n")
+    
     yield
+    
+    # 🆕 自进化系统集成：关闭EvolutionMonitor
+    if evolution_settings.EVOLUTION_ENABLED:
+        print("\n" + "=" * 50)
+        print("关闭自进化系统...")
+        print("=" * 50)
+        
+        monitor = get_evolution_monitor()
+        await monitor.stop()
+        
+        print("✅ 自进化系统已关闭")
+        print("=" * 50 + "\n")
 
 
 app = FastAPI(

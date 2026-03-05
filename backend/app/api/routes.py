@@ -142,7 +142,7 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     async def generate():
         full_response = ""
         try:
-            yield f"data: {json.dumps({
+            conv_data = {
                 'type': 'conversation_id', 
                 'id': conversation.id,
                 'title': conversation.title,
@@ -150,7 +150,8 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
                 'model': conversation.model,
                 'created_at': conversation.created_at.isoformat() if conversation.created_at else None,
                 'architecture': 'langgraph',
-            }, ensure_ascii=False)}\n\n"
+            }
+            yield f"data: {json.dumps(conv_data, ensure_ascii=False)}\n\n"
             
             async for chunk in agent.chat_stream(request.message, db=db):
                 if chunk.get("type") == "content":
@@ -531,3 +532,91 @@ async def search_memory(
 async def get_memory_stats():
     stats = agent_manager.get_stats()
     return stats
+
+
+# ==================== 自进化系统API端点 ====================
+
+@router.get("/evolution/metrics")
+async def get_evolution_metrics():
+    """
+    获取自进化系统指标
+    
+    Returns:
+        EvolutionMetrics: 进化指标数据
+    """
+    from app.evolution import get_evolution_monitor
+    
+    monitor = get_evolution_monitor()
+    return monitor.get_metrics().model_dump()
+
+
+@router.post("/evolution/analyze")
+async def trigger_evolution_analysis():
+    """
+    手动触发进化分析
+    
+    触发后台分析任务，识别模式并生成Skill
+    
+    Returns:
+        dict: 分析状态
+    """
+    from app.evolution import get_evolution_monitor
+    
+    monitor = get_evolution_monitor()
+    await monitor._analyze_and_evolve()
+    
+    return {"status": "analysis_triggered", "message": "进化分析已触发"}
+
+
+@router.get("/evolution/patterns")
+async def get_detected_patterns(days: int = 7):
+    """
+    获取识别的任务模式
+    
+    Args:
+        days: 分析最近几天的数据
+        
+    Returns:
+        dict: 识别的模式列表
+    """
+    from app.evolution.pattern_recognizer import PatternRecognizer
+    
+    recognizer = PatternRecognizer()
+    patterns = await recognizer.analyze_recent_traces(days=days)
+    
+    return {
+        "patterns": [p.model_dump() for p in patterns],
+        "total": len(patterns),
+        "days": days,
+    }
+
+
+@router.get("/evolution/skills")
+async def list_evolved_skills():
+    """
+    列出自动生成的Skills
+    
+    Returns:
+        dict: 自动生成的Skill列表
+    """
+    from pathlib import Path
+    from app.evolution.config import evolution_settings
+    
+    skills_dir = Path(evolution_settings.SKILL_OUTPUT_DIR)
+    skills = []
+    
+    if skills_dir.exists():
+        for skill_dir in skills_dir.iterdir():
+            if skill_dir.is_dir():
+                skill_md = skill_dir / "SKILL.md"
+                if skill_md.exists():
+                    skills.append({
+                        "name": skill_dir.name,
+                        "path": str(skill_dir),
+                        "created": skill_md.stat().st_ctime,
+                    })
+    
+    return {
+        "skills": skills,
+        "total": len(skills),
+    }

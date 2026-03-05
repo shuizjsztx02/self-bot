@@ -40,6 +40,14 @@ class ExecutionTrace(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     status: str = "running"  # "running", "completed", "error"
     
+    # 自进化系统增强字段
+    intent_classification: Optional[str] = None  # 意图分类
+    intent_confidence: float = 0.0  # 意图置信度
+    routed_nodes: List[str] = Field(default_factory=list)  # 路由节点
+    skills_activated: List[str] = Field(default_factory=list)  # 激活的Skills
+    task_type: Optional[str] = None  # 任务类型
+    user_feedback: Optional[str] = None  # 用户反馈
+    
     def add_event(self, event: TraceEvent):
         """添加事件"""
         self.events.append(event)

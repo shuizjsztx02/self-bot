@@ -1,0 +1,31 @@
+{
+  "skill_id": "skill_20260305224556",
+  "name": "query-with-search",
+  "description": "自动生成的Skill，用于处理query类型的任务。 主要使用search、rag等工具。 基于5次成功执行总结，成功率90.0%。",
+  "created_at": "2026-03-05T22:45:56.078488",
+  "status": "draft",
+  "source_pattern": {
+    "pattern_id": "test_pattern",
+    "pattern_name": "query_with_search",
+    "description": "查询模式",
+    "similar_tasks": [],
+    "task_count": 5,
+    "common_intent": "query",
+    "common_tools": [
+      "search",
+      "rag"
+    ],
+    "common_workflow": [
+      "search",
+      "rag"
+    ],
+    "frequency": 5,
+    "success_rate": 0.9,
+    "avg_duration_ms": 0.0,
+    "user_satisfaction": null,
+    "evolution_score": 0.0,
+    "first_seen": "2026-03-05T22:45:56.076945",
+    "last_seen": "2026-03-05T22:45:56.076945",
+    "created_at": "2026-03-05T22:45:56.076945"
+  }
+}

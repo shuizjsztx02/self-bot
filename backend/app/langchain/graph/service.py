@@ -199,6 +199,14 @@ class LangGraphService:
         
         logger.info(f"[LangGraphService] Processing chat: {message[:50]}..., thread_id={effective_thread_id}")
         
+        # 🆕 自进化系统集成：开始追踪
+        from app.langchain.tracing.execution import ExecutionTracer
+        tracer = ExecutionTracer()
+        trace = tracer.start_trace(
+            conversation_id=self.conversation_id or "",
+            query=message,
+        )
+        
         try:
             from app.langchain.graph.state import set_shared_memory, set_long_term_memory
             
@@ -215,6 +223,8 @@ class LangGraphService:
                 thread_id=effective_thread_id,
                 checkpoint_id=checkpoint_id,
                 history_messages=history_messages,
+                shared_memory=self.shared_memory,
+                long_term_memory=self.long_term_memory,
             )
             
             output = result.get("final_response", "")
@@ -231,6 +241,21 @@ class LangGraphService:
                 self.conversation_memory.append(AIMessage(content=output))
                 self.shared_memory.add_short_term_memory(AIMessage(content=output))
             
+            # 🆕 自进化系统集成：记录关键信息
+            trace.intent_classification = result.get("intent", {}).get("type") if isinstance(result.get("intent"), dict) else result.get("intent")
+            trace.intent_confidence = result.get("confidence", 0.0)
+            trace.routed_nodes = result.get("node_executions", [])
+            trace.skills_activated = result.get("skills_activated", [])
+            trace.response = output
+            
+            # 结束并保存轨迹
+            tracer.end_trace(
+                trace_id=trace.trace_id,
+                response=output,
+                token_usage=result.get("token_usage", {}),
+            )
+            await tracer.save_trace(trace.trace_id)
+            
             return {
                 "output": output,
                 "tool_calls": tool_calls,
@@ -242,6 +267,11 @@ class LangGraphService:
             
         except Exception as e:
             logger.error(f"[LangGraphService] Chat error: {e}")
+            
+            # 🆕 自进化系统集成：记录错误
+            tracer.end_trace(trace_id=trace.trace_id, error=str(e))
+            await tracer.save_trace(trace.trace_id)
+            
             return {
                 "output": f"抱歉，处理请求时发生错误: {str(e)}",
                 "tool_calls": [],
@@ -292,6 +322,8 @@ class LangGraphService:
                 thread_id=effective_thread_id,
                 checkpoint_id=checkpoint_id,
                 history_messages=history_messages,
+                shared_memory=self.shared_memory,
+                long_term_memory=self.long_term_memory,
             ):
                 for node_name, node_output in event.items():
                     if isinstance(node_output, dict):

@@ -15,6 +15,7 @@ backend/docs/
 backend/workspace/
 backend/tests/
 backend/model_hub/
+backend/scripts/
 
 # Node
 node_modules/
