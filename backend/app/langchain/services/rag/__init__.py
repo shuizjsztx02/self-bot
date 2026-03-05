@@ -1,3 +1,8 @@
+"""
+RAG 服务模块
+
+提供 RAG 相关的服务和组件
+"""
 from .rag_types import (
     ConversationTurn,
     RewrittenQuery,
@@ -13,6 +18,12 @@ from .query_rewriter import (
     PronounResolver,
     QueryExpander,
 )
+from .service import (
+    RagService,
+    RagServiceConfig,
+    RagProcessResult,
+    RagSearchResult,
+)
 
 __all__ = [
     "ConversationTurn",
@@ -24,4 +35,8 @@ __all__ = [
     "QueryRewriter",
     "PronounResolver",
     "QueryExpander",
+    "RagService",
+    "RagServiceConfig",
+    "RagProcessResult",
+    "RagSearchResult",
 ]

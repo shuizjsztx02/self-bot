@@ -1,13 +1,14 @@
 """
 互联网搜索节点
 
-包装现有 ResearcherAgent，提供 LangGraph 兼容的节点函数
+使用 SearchService 进行互联网搜索，提供 LangGraph 兼容的节点函数
+支持共享记忆系统（通过 ContextVar 传递）
 """
 import time
 import logging
 from typing import Dict, Any
 
-from app.langchain.graph.state import SupervisorState, StateAdapter
+from app.langchain.graph.state import SupervisorState, StateAdapter, get_db_session, get_shared_memory
 from app.langchain.graph.adapters.search_adapter import SearchAdapter
 from app.langchain.llm import get_llm
 
@@ -28,22 +29,30 @@ async def web_search_node(state: SupervisorState) -> Dict[str, Any]:
     """
     start_time = time.time()
     query = state.get("query", "")
+    shared_memory = get_shared_memory()
     
     logger.info(f"[SearchNode] Searching for: {query[:50]}...")
+    logger.info(f"[SearchNode] Has shared_memory: {shared_memory is not None}")
     
     try:
-        from app.langchain.agents.researcher_agent import ResearcherAgent
+        from app.langchain.services.search import SearchService, SearchServiceConfig
         from app.config import settings
         
         llm = get_llm()
         
-        researcher = ResearcherAgent(llm=llm)
+        config = SearchServiceConfig(
+            max_iterations=getattr(settings, 'RESEARCHER_MAX_ITERATIONS', 3),
+        )
         
-        max_iterations = getattr(settings, 'RESEARCHER_MAX_ITERATIONS', 3)
+        search_service = SearchService(
+            llm=llm,
+            config=config,
+            short_term_memory=shared_memory,
+        )
         
-        result = await researcher.research(
+        result = await search_service.research(
             topic=query,
-            max_iterations=max_iterations,
+            max_iterations=config.max_iterations,
         )
         
         update = SearchAdapter.to_state(result, dict(state))
@@ -99,33 +108,42 @@ async def parallel_search_node(state: SupervisorState) -> Dict[str, Any]:
     
     start_time = time.time()
     query = state.get("query", "")
+    shared_memory = get_shared_memory()
     
     logger.info(f"[ParallelNode] Parallel search for: {query[:50]}...")
+    logger.info(f"[ParallelNode] Has shared_memory: {shared_memory is not None}")
     
     try:
-        from app.langchain.agents.rag_agent import RagAgent
-        from app.langchain.agents.researcher_agent import ResearcherAgent
+        from app.langchain.services.rag import RagService, RagServiceConfig
+        from app.langchain.services.search import SearchService, SearchServiceConfig
         from app.config import settings
         
         llm = get_llm()
         user_id = state.get("user_id")
-        db_session = state.get("db_session")
+        db_session = get_db_session()
         kb_hints = state.get("kb_hints", [])
         
-        rag_agent = RagAgent(
-            llm=llm,
+        rag_service = RagService(
+            llm_client=llm,
             user_id=user_id,
             db_session=db_session,
+            short_term_memory=shared_memory,
         )
         
-        researcher = ResearcherAgent(llm=llm)
+        search_service = SearchService(
+            llm=llm,
+            config=SearchServiceConfig(
+                max_iterations=getattr(settings, 'RESEARCHER_MAX_ITERATIONS', 3),
+            ),
+            short_term_memory=shared_memory,
+        )
         
-        rag_task = rag_agent.process_query_with_context(
+        rag_task = rag_service.process_query(
             query=query,
             kb_ids=kb_hints if kb_hints else None,
         )
         
-        search_task = researcher.research(
+        search_task = search_service.research(
             topic=query,
             max_iterations=getattr(settings, 'RESEARCHER_MAX_ITERATIONS', 3),
         )

@@ -18,6 +18,12 @@ class SearchResult:
     sources: List[Dict[str, Any]]
     iterations: int
     
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "query": self.query,
@@ -31,7 +37,7 @@ class SearchAdapter:
     """
     搜索结果适配器
     
-    负责在 ResearcherAgent 结果和 SupervisorState 之间转换
+    负责 SearchService 结果和 SupervisorState 之间转换
     """
     
     @staticmethod
@@ -66,8 +72,8 @@ class SearchAdapter:
             return {
                 **state,
                 "search_context": result.context,
-                "search_sources": getattr(result, 'sources', []),
-                "search_iterations": getattr(result, 'iterations', 1),
+                "search_sources": result.sources if hasattr(result, 'sources') else [],
+                "search_iterations": result.iterations if hasattr(result, 'iterations') else 1,
             }
         
         if hasattr(result, '__str__'):
@@ -99,41 +105,6 @@ class SearchAdapter:
             context=state.get("search_context", ""),
             sources=state.get("search_sources", []),
             iterations=state.get("search_iterations", 1),
-        )
-    
-    @staticmethod
-    def from_researcher_result(result: Any, query: str) -> SearchResult:
-        """
-        从 ResearcherAgent 结果创建 SearchResult
-        
-        Args:
-            result: ResearcherAgent 返回的结果 (通常是 str)
-            query: 原始查询
-            
-        Returns:
-            SearchResult 实例
-        """
-        if isinstance(result, str):
-            return SearchResult(
-                query=query,
-                context=result,
-                sources=[],
-                iterations=1,
-            )
-        
-        if isinstance(result, dict):
-            return SearchResult(
-                query=query,
-                context=result.get("context", result.get("result", "")),
-                sources=result.get("sources", []),
-                iterations=result.get("iterations", 1),
-            )
-        
-        return SearchResult(
-            query=query,
-            context=str(result),
-            sources=[],
-            iterations=1,
         )
     
     @staticmethod

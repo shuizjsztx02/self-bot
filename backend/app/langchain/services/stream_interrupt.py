@@ -17,7 +17,7 @@ class StreamSession:
     is_interrupted: bool = False
     created_at: datetime = field(default_factory=datetime.now)
     interrupted_at: Optional[datetime] = None
-    
+
 
 class StreamInterruptManager:
     """

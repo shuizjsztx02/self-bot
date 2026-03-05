@@ -1,7 +1,7 @@
 """
-Main Agent 适配器
+Chat Service 适配器
 
-负责 MainAgent 结果与 SupervisorState 之间的转换
+负责 ChatService 结果与 SupervisorState 之间的转换
 """
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
@@ -31,18 +31,18 @@ class AgentResponse:
 
 class MainAgentAdapter:
     """
-    Main Agent 结果适配器
+    Chat Service 结果适配器
     
-    负责在 MainAgent 结果和 SupervisorState 之间转换
+    负责 ChatService 结果和 SupervisorState 之间转换
     """
     
     @staticmethod
     def to_state(result: Any, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        将 MainAgent 结果写入状态
+        将 ChatService 结果写入状态
         
         Args:
-            result: MainAgent 结果 (dict, str, AgentResponse)
+            result: ChatService 结果 (dict, str, ChatResult)
             state: 当前状态
             
         Returns:
@@ -61,6 +61,14 @@ class MainAgentAdapter:
                 "final_response": result.get("output") or result.get("response") or result.get("content", ""),
                 "tool_calls": result.get("tool_calls", []),
                 "total_tokens": state.get("total_tokens", 0) + result.get("tokens_used", 0),
+            }
+        
+        if hasattr(result, 'output'):
+            return {
+                **state,
+                "final_response": result.output if hasattr(result.output, '__str__') else str(result.output),
+                "tool_calls": result.tool_calls if result.tool_calls else [],
+                "total_tokens": state.get("total_tokens", 0) + getattr(result, 'tokens_used', 0),
             }
         
         if hasattr(result, 'response'):
@@ -83,7 +91,7 @@ class MainAgentAdapter:
     @staticmethod
     def from_state(state: Dict[str, Any]) -> Optional[AgentResponse]:
         """
-        从状态提取 Agent 响应
+        从状态提取响应
         
         Args:
             state: 当前状态
@@ -100,48 +108,6 @@ class MainAgentAdapter:
             tokens_used=state.get("total_tokens", 0),
             success=state.get("error") is None,
             error=state.get("error"),
-        )
-    
-    @staticmethod
-    def from_main_agent_result(result: Any) -> AgentResponse:
-        """
-        从 MainAgent 返回结果创建 AgentResponse
-        
-        Args:
-            result: MainAgent.chat() 返回的结果
-            
-        Returns:
-            AgentResponse 实例
-        """
-        if isinstance(result, dict):
-            return AgentResponse(
-                response=result.get("output") or result.get("response", ""),
-                tool_calls=result.get("tool_calls", []),
-                tokens_used=result.get("tokens_used", 0),
-                success=True,
-            )
-        
-        if isinstance(result, str):
-            return AgentResponse(
-                response=result,
-                tool_calls=[],
-                tokens_used=0,
-                success=True,
-            )
-        
-        if hasattr(result, 'output'):
-            return AgentResponse(
-                response=result.output,
-                tool_calls=getattr(result, 'tool_calls', []),
-                tokens_used=getattr(result, 'tokens_used', 0),
-                success=True,
-            )
-        
-        return AgentResponse(
-            response=str(result),
-            tool_calls=[],
-            tokens_used=0,
-            success=True,
         )
     
     @staticmethod

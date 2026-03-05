@@ -1,23 +1,57 @@
 """
 主 Agent 节点
 
-包装现有 MainAgent，提供 LangGraph 兼容的节点函数
+使用 ChatService 进行对话，提供 LangGraph 兼容的节点函数
+支持共享记忆系统（通过 ContextVar 传递）
 """
 import time
 import logging
-from typing import Dict, Any, Optional, AsyncIterator
+from typing import Dict, Any, Optional, AsyncIterator, List
 
-from app.langchain.graph.state import SupervisorState, StateAdapter
+from app.langchain.graph.state import SupervisorState, StateAdapter, get_db_session, get_shared_memory
 from app.langchain.graph.adapters.main_adapter import MainAgentAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_history_from_state(state: SupervisorState) -> List:
+    """
+    从状态中提取历史消息
+    
+    Args:
+        state: 当前状态
+        
+    Returns:
+        历史消息列表（不包含当前用户消息）
+    """
+    messages = state.get("messages", [])
+    
+    if not messages:
+        return []
+    
+    history = []
+    for msg in messages[:-1]:
+        if hasattr(msg, 'content'):
+            history.append(msg)
+        elif isinstance(msg, dict) and 'content' in msg:
+            from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            if role == 'user':
+                history.append(HumanMessage(content=content))
+            elif role == 'assistant':
+                history.append(AIMessage(content=content))
+            elif role == 'system':
+                history.append(SystemMessage(content=content))
+    
+    return history
 
 
 async def generate_response_node(state: SupervisorState) -> Dict[str, Any]:
     """
     响应生成节点
     
-    使用 MainAgent 生成最终响应
+    使用 ChatService 生成最终响应
     
     Args:
         state: 当前状态
@@ -29,21 +63,27 @@ async def generate_response_node(state: SupervisorState) -> Dict[str, Any]:
     query = state.get("query", "")
     user_id = state.get("user_id")
     conversation_id = state.get("conversation_id")
-    db_session = state.get("db_session")
+    db_session = get_db_session()
+    shared_memory = get_shared_memory()
     
     logger.info(f"[MainNode] Generating response for: {query[:50]}...")
+    logger.info(f"[MainNode] Has shared_memory: {shared_memory is not None}")
     
     try:
-        from app.langchain.agents.main_agent import MainAgent
+        from app.langchain.services.chat import ChatService
         
-        agent = MainAgent(
+        service = ChatService(
             conversation_id=conversation_id,
             user_name=user_id or "用户",
+            short_term_memory=shared_memory,
         )
+        
+        history_messages = _extract_history_from_state(state)
+        logger.info(f"[MainNode] Extracted {len(history_messages)} history messages from state")
         
         enhanced_query = MainAgentAdapter.build_enhanced_query(state)
         
-        result = await agent.chat(enhanced_query, db=db_session)
+        result = await service.chat(enhanced_query, db=db_session, history_messages=history_messages)
         
         update = MainAgentAdapter.to_state(result, dict(state))
         
@@ -87,7 +127,7 @@ async def generate_response_stream_node(
     """
     流式响应生成节点
     
-    使用 MainAgent 生成流式响应
+    使用 ChatService 生成流式响应
     
     Args:
         state: 当前状态
@@ -99,22 +139,28 @@ async def generate_response_stream_node(
     query = state.get("query", "")
     user_id = state.get("user_id")
     conversation_id = state.get("conversation_id")
-    db_session = state.get("db_session")
+    db_session = get_db_session()
+    shared_memory = get_shared_memory()
     
     logger.info(f"[MainStreamNode] Streaming response for: {query[:50]}...")
+    logger.info(f"[MainStreamNode] Has shared_memory: {shared_memory is not None}")
     
     try:
-        from app.langchain.agents.main_agent import MainAgent
+        from app.langchain.services.chat import ChatService
         
-        agent = MainAgent(
+        service = ChatService(
             conversation_id=conversation_id,
             user_name=user_id or "用户",
+            short_term_memory=shared_memory,
         )
+        
+        history_messages = _extract_history_from_state(state)
+        logger.info(f"[MainStreamNode] Extracted {len(history_messages)} history messages from state")
         
         enhanced_query = MainAgentAdapter.build_enhanced_query(state)
         
         full_response = ""
-        async for chunk in agent.chat_stream(enhanced_query, db=db_session):
+        async for chunk in service.chat_stream(enhanced_query, db=db_session, history_messages=history_messages):
             if isinstance(chunk, dict):
                 if chunk.get("type") == "content":
                     content = chunk.get("content", "")

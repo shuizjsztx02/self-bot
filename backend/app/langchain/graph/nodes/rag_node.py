@@ -1,13 +1,14 @@
 """
 RAG 检索节点
 
-包装现有 RagAgent，提供 LangGraph 兼容的节点函数
+使用 RagService 进行知识库检索，提供 LangGraph 兼容的节点函数
+支持共享记忆系统（通过 ContextVar 传递）
 """
 import time
 import logging
 from typing import Dict, Any
 
-from app.langchain.graph.state import SupervisorState, StateAdapter
+from app.langchain.graph.state import SupervisorState, StateAdapter, get_db_session, get_shared_memory
 from app.langchain.graph.adapters.rag_adapter import RagAdapter
 from app.langchain.llm import get_llm
 
@@ -30,15 +31,17 @@ async def rag_retrieve_node(state: SupervisorState) -> Dict[str, Any]:
     query = state.get("query", "")
     kb_hints = state.get("kb_hints", [])
     user_id = state.get("user_id")
-    db_session = state.get("db_session")
+    db_session = get_db_session()
+    shared_memory = get_shared_memory()
     
     logger.info(f"[RagNode] Retrieving for query: {query[:50]}...")
     logger.info(f"[RagNode] KB hints: {kb_hints}")
+    logger.info(f"[RagNode] Has shared_memory: {shared_memory is not None}")
     
     try:
-        from app.langchain.agents.rag_agent import RagAgent, RagAgentConfig
+        from app.langchain.services.rag import RagService, RagServiceConfig
         
-        config = RagAgentConfig(
+        config = RagServiceConfig(
             max_history_turns=5,
             max_context_tokens=4000,
             top_k=5,
@@ -46,13 +49,14 @@ async def rag_retrieve_node(state: SupervisorState) -> Dict[str, Any]:
             use_rerank=True,
         )
         
-        rag_agent = RagAgent(
+        rag_service = RagService(
             user_id=user_id,
             db_session=db_session,
             config=config,
+            short_term_memory=shared_memory,
         )
         
-        result = await rag_agent.process_query(
+        result = await rag_service.process_query(
             query=query,
             kb_ids=kb_hints if kb_hints else None,
         )
@@ -110,26 +114,29 @@ async def rag_chat_node(state: SupervisorState) -> Dict[str, Any]:
     query = state.get("query", "")
     kb_hints = state.get("kb_hints", [])
     user_id = state.get("user_id")
-    db_session = state.get("db_session")
+    db_session = get_db_session()
+    shared_memory = get_shared_memory()
     
     logger.info(f"[RagChatNode] Chat for query: {query[:50]}...")
+    logger.info(f"[RagChatNode] Has shared_memory: {shared_memory is not None}")
     
     try:
-        from app.langchain.agents.rag_agent import RagAgent, RagAgentConfig
+        from app.langchain.services.rag import RagService, RagServiceConfig
         
-        config = RagAgentConfig(
+        config = RagServiceConfig(
             max_history_turns=10,
             max_context_tokens=4000,
             top_k=5,
         )
         
-        rag_agent = RagAgent(
+        rag_service = RagService(
             user_id=user_id,
             db_session=db_session,
             config=config,
+            short_term_memory=shared_memory,
         )
         
-        result = await rag_agent.chat_with_rag(
+        result = await rag_service.process_query(
             query=query,
             kb_ids=kb_hints if kb_hints else None,
             top_k=5,
@@ -139,11 +146,11 @@ async def rag_chat_node(state: SupervisorState) -> Dict[str, Any]:
             "rag_context": result.formatted_context,
             "rag_sources": [
                 {
-                    "id": str(s.id) if hasattr(s, 'id') else "",
-                    "title": s.title if hasattr(s, 'title') else "",
+                    "id": str(s.chunk_id) if hasattr(s, 'chunk_id') else "",
+                    "title": s.doc_name if hasattr(s, 'doc_name') else "",
                     "score": s.score if hasattr(s, 'score') else 0,
                 }
-                for s in result.sources
+                for s in result.documents
             ],
             "rewritten_query": result.rewritten_query,
         }

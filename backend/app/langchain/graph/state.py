@@ -2,15 +2,51 @@
 Supervisor 状态定义
 
 定义 LangGraph 图中使用的状态结构和适配器
+支持共享记忆系统（通过 ContextVar 传递，避免序列化问题）
 """
 from typing import TypedDict, Annotated, Optional, List, Any, Dict, Union
 from langgraph.graph.message import add_messages
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
+from contextvars import ContextVar
 import logging
 
 logger = logging.getLogger(__name__)
+
+_context_db_session: ContextVar[Optional[Any]] = ContextVar("db_session", default=None)
+_context_shared_memory: ContextVar[Optional[Any]] = ContextVar("shared_memory", default=None)
+_context_long_term_memory: ContextVar[Optional[Any]] = ContextVar("long_term_memory", default=None)
+
+
+def set_db_session(db_session: Optional[Any]) -> None:
+    """设置当前上下文的数据库会话"""
+    _context_db_session.set(db_session)
+
+
+def get_db_session() -> Optional[Any]:
+    """获取当前上下文的数据库会话"""
+    return _context_db_session.get()
+
+
+def set_shared_memory(shared_memory: Optional[Any]) -> None:
+    """设置当前上下文的共享记忆"""
+    _context_shared_memory.set(shared_memory)
+
+
+def get_shared_memory() -> Optional[Any]:
+    """获取当前上下文的共享记忆"""
+    return _context_shared_memory.get()
+
+
+def set_long_term_memory(long_term_memory: Optional[Any]) -> None:
+    """设置当前上下文的长期记忆"""
+    _context_long_term_memory.set(long_term_memory)
+
+
+def get_long_term_memory() -> Optional[Any]:
+    """获取当前上下文的长期记忆"""
+    return _context_long_term_memory.get()
 
 
 class QueryIntent(str, Enum):
@@ -39,7 +75,7 @@ class SourceReference:
     """来源引用"""
     id: str
     title: str
-    source_type: str  # "kb", "web", "file"
+    source_type: str
     score: float = 0.0
     url: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -64,6 +100,9 @@ class SupervisorState(TypedDict, total=False):
     1. 字段与现有 Agent 输入输出对齐
     2. 支持增量更新
     3. 可序列化 (用于调试和持久化)
+    
+    注意: shared_memory 和 long_term_memory 通过 ContextVar 传递，
+    不放入状态中，避免序列化问题。
     
     字段分组:
     
@@ -103,7 +142,6 @@ class SupervisorState(TypedDict, total=False):
     === 会话字段 ===
     user_id: 用户 ID
     conversation_id: 会话 ID
-    db_session: 数据库会话 (不序列化)
     
     === 错误处理字段 ===
     error: 错误信息
@@ -147,7 +185,6 @@ class SupervisorState(TypedDict, total=False):
     
     user_id: Optional[str]
     conversation_id: Optional[str]
-    db_session: Optional[Any]
     
     error: Optional[str]
     error_node: Optional[str]
@@ -170,15 +207,7 @@ class StateAdapter:
     
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> SupervisorState:
-        """
-        从字典创建状态
-        
-        Args:
-            data: 输入字典
-            
-        Returns:
-            SupervisorState 实例
-        """
+        """从字典创建状态"""
         return SupervisorState(
             messages=data.get("messages", []),
             query=data.get("query", ""),
@@ -203,7 +232,8 @@ class StateAdapter:
             parallel_results=data.get("parallel_results"),
             user_id=data.get("user_id"),
             conversation_id=data.get("conversation_id"),
-            db_session=data.get("db_session"),
+            shared_memory=data.get("shared_memory"),
+            long_term_memory=data.get("long_term_memory"),
             error=data.get("error"),
             error_node=data.get("error_node"),
             error_traceback=data.get("error_traceback"),
@@ -215,85 +245,38 @@ class StateAdapter:
     
     @staticmethod
     def to_dict(state: SupervisorState) -> Dict[str, Any]:
-        """
-        将状态转换为字典
-        
-        Args:
-            state: SupervisorState 实例
-            
-        Returns:
-            字典表示
-        """
-        result = dict(state)
-        if "db_session" in result:
-            del result["db_session"]
-        return result
+        """将状态转换为字典"""
+        return dict(state)
     
     @staticmethod
     def from_supervisor_agent(agent: Any) -> SupervisorState:
-        """
-        从现有 SupervisorAgent 创建状态
-        
-        Args:
-            agent: SupervisorAgent 实例
-            
-        Returns:
-            SupervisorState 实例
-        """
+        """从现有 SupervisorAgent 创建状态"""
         return SupervisorState(
             messages=[],
             query="",
             user_id=getattr(agent, 'user_id', None),
             conversation_id=getattr(agent, 'conversation_id', None),
-            db_session=getattr(agent, 'db_session', None),
         )
     
     @staticmethod
     def to_agent_input(state: SupervisorState) -> Dict[str, Any]:
-        """
-        转换为 Agent 输入格式
-        
-        Args:
-            state: SupervisorState 实例
-            
-        Returns:
-            Agent 输入字典
-        """
+        """转换为 Agent 输入格式"""
         return {
             "message": state.get("query", ""),
-            "db": state.get("db_session"),
+            "db": get_db_session(),
             "conversation_id": state.get("conversation_id"),
         }
     
     @staticmethod
     def merge(state: SupervisorState, updates: Dict[str, Any]) -> SupervisorState:
-        """
-        合并状态更新
-        
-        Args:
-            state: 原始状态
-            updates: 更新内容
-            
-        Returns:
-            合并后的状态
-        """
+        """合并状态更新"""
         result = dict(state)
         result.update(updates)
         return SupervisorState(**result)
     
     @staticmethod
     def serialize(state: SupervisorState) -> Dict[str, Any]:
-        """
-        序列化状态 (用于日志/持久化)
-        
-        移除不可序列化的字段
-        
-        Args:
-            state: SupervisorState 实例
-            
-        Returns:
-            可序列化的字典
-        """
+        """序列化状态 (用于日志/持久化)"""
         result = StateAdapter.to_dict(state)
         
         if "messages" in result:
@@ -307,6 +290,73 @@ class StateAdapter:
         return result
     
     @staticmethod
+    def serialize_for_checkpoint(state: SupervisorState) -> Dict[str, Any]:
+        """为 Checkpointer 序列化状态"""
+        result = {}
+        
+        for key, value in state.items():
+            if key in ("db_session", "shared_memory", "long_term_memory"):
+                continue
+            
+            if value is None:
+                result[key] = None
+            elif isinstance(value, (str, int, float, bool)):
+                result[key] = value
+            elif isinstance(value, (list, tuple)):
+                result[key] = [
+                    StateAdapter._serialize_value(v) for v in value
+                ]
+            elif isinstance(value, dict):
+                result[key] = {
+                    k: StateAdapter._serialize_value(v) for k, v in value.items()
+                }
+            else:
+                result[key] = StateAdapter._serialize_value(value)
+        
+        return result
+    
+    @staticmethod
+    def _serialize_value(value: Any) -> Any:
+        """序列化单个值"""
+        if value is None:
+            return None
+        elif isinstance(value, (str, int, float, bool)):
+            return value
+        elif isinstance(value, (list, tuple)):
+            return [StateAdapter._serialize_value(v) for v in value]
+        elif isinstance(value, dict):
+            return {k: StateAdapter._serialize_value(v) for k, v in value.items()}
+        elif hasattr(value, "model_dump"):
+            return value.model_dump()
+        elif hasattr(value, "to_dict"):
+            return value.to_dict()
+        elif hasattr(value, "__dict__"):
+            return {k: StateAdapter._serialize_value(v) for k, v in value.__dict__.items() if not k.startswith("_")}
+        else:
+            return str(value)
+    
+    @staticmethod
+    def deserialize_from_checkpoint(
+        data: Dict[str, Any],
+        db_session: Optional[Any] = None,
+        shared_memory: Optional[Any] = None,
+        long_term_memory: Optional[Any] = None,
+    ) -> SupervisorState:
+        """从 Checkpointer 反序列化状态"""
+        result = dict(data)
+        
+        if db_session is not None:
+            set_db_session(db_session)
+        
+        if shared_memory is not None:
+            result["shared_memory"] = shared_memory
+        
+        if long_term_memory is not None:
+            result["long_term_memory"] = long_term_memory
+        
+        return SupervisorState(**result)
+    
+    @staticmethod
     def record_node_execution(
         state: SupervisorState,
         node_name: str,
@@ -314,19 +364,7 @@ class StateAdapter:
         duration_ms: float = 0.0,
         error: Optional[str] = None,
     ) -> SupervisorState:
-        """
-        记录节点执行
-        
-        Args:
-            state: 当前状态
-            node_name: 节点名称
-            success: 是否成功
-            duration_ms: 执行时长 (毫秒)
-            error: 错误信息
-            
-        Returns:
-            更新后的状态
-        """
+        """记录节点执行"""
         executions = state.get("node_executions", [])
         executions.append({
             "node": node_name,
@@ -344,6 +382,9 @@ def create_initial_state(
     user_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     db_session: Optional[Any] = None,
+    history_messages: Optional[List[Any]] = None,
+    shared_memory: Optional[Any] = None,
+    long_term_memory: Optional[Any] = None,
 ) -> SupervisorState:
     """
     创建初始状态
@@ -352,18 +393,36 @@ def create_initial_state(
         query: 用户查询
         user_id: 用户 ID
         conversation_id: 会话 ID
-        db_session: 数据库会话
+        db_session: 数据库会话 (存储到 context variable 中，不放入状态)
+        history_messages: 历史消息列表 (用于对话上下文)
+        shared_memory: 短期记忆实例 (存储到 context variable 中，不放入状态)
+        long_term_memory: 长期记忆实例 (存储到 context variable 中，不放入状态)
         
     Returns:
         初始 SupervisorState
     """
+    if db_session is not None:
+        set_db_session(db_session)
+    
+    if shared_memory is not None:
+        set_shared_memory(shared_memory)
+    
+    if long_term_memory is not None:
+        set_long_term_memory(long_term_memory)
+    
+    from langchain_core.messages import HumanMessage
+    
+    messages = []
+    if history_messages:
+        messages.extend(history_messages)
+    messages.append(HumanMessage(content=query))
+    
     return SupervisorState(
-        messages=[],
+        messages=messages,
         query=query,
         rewritten_query=None,
         user_id=user_id,
         conversation_id=conversation_id,
-        db_session=db_session,
         intent=None,
         confidence=None,
         kb_hints=None,

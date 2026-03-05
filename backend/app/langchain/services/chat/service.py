@@ -1,9 +1,24 @@
+"""
+Chat 服务
+
+编排对话相关组件，提供统一的对话服务接口
+
+职责：
+1. 服务编排 - 协调 Memory、Prompts、Skills、Tools 等组件
+2. 对话流程 - 实现完整的对话流程（构建提示词 -> LLM调用 -> 工具执行 -> 记忆存储）
+3. 流式输出 - 支持流式对话
+4. 记忆管理 - 短期/长期记忆存储和检索
+
+不包含：
+- Agent 概念（已移除）
+- 记忆管理逻辑（委托给 memory 模块）
+- 提示词构建逻辑（委托给 prompts 模块）
+- 技能匹配逻辑（委托给 skills 模块）
+"""
+from typing import Optional, List, Any, Dict, AsyncIterator
+from dataclasses import dataclass, field
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
-from langchain_core.output_parsers import StrOutputParser
-from typing import List, Optional, AsyncIterator, Dict, Any
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from pathlib import Path
 import uuid
 import logging
@@ -16,39 +31,88 @@ from app.callbacks import AgentCallbackHandler, ExecutionTracer
 from app.config import settings
 from app.skills import SkillManager, DANGEROUS_TOOLS
 from app.skills.tracer import get_skill_tracer, skill_trace_step
-from app.langchain.agents.stream_interrupt import (
-    StreamInterruptManager, 
+from app.langchain.services.stream_interrupt import (
+    StreamInterruptManager,
     StreamInterruptedException,
     get_stream_interrupt_manager
 )
-from app.langchain.tracing.rag_trace import get_rag_trace, trace_step
-from app.langchain.tracing.memory_trace import (
-    start_memory_trace,
-    end_memory_trace,
+from app.langchain.tracing.unified_tracer import (
+    start_chat_trace,
+    end_chat_trace,
+    trace_step,
     memory_trace_step,
-    get_memory_trace,
+    skill_trace_step,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class MainAgent:
+@dataclass
+class ChatServiceConfig:
+    """Chat 服务配置"""
+    max_iterations: int = 10
+    max_history_turns: int = 10
+    max_context_tokens: int = 4000
+    enable_skills: bool = True
+    enable_long_term_memory: bool = True
+
+
+@dataclass
+class ChatResult:
+    """对话结果"""
+    output: str
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    trace: Optional[str] = None
+    callback_summary: Optional[Dict] = None
+    
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "output": self.output,
+            "tool_calls": self.tool_calls,
+            "trace": self.trace,
+            "callback_summary": self.callback_summary,
+        }
+
+
+class ChatService:
+    """
+    Chat 服务
+    
+    编排对话相关组件，提供统一的对话服务接口
+    
+    使用方式：
+        service = ChatService(conversation_id="conv_123")
+        result = await service.chat("你好")
+    """
+    
     def __init__(
         self,
-        provider: Optional[str] = None,
-        model: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         user_name: str = "用户",
         agent_name: str = "智能助手",
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        short_term_memory=None,
+        config: Optional[ChatServiceConfig] = None,
+        short_term_memory: Optional[ShortTermMemory] = None,
+        db_session: Optional[Any] = None,
     ):
-        self.provider = provider
-        self.model = model
         self.conversation_id = conversation_id
+        self.user_id = user_id
         self.user_name = user_name
         self.agent_name = agent_name
+        self.provider = provider
+        self.model = model
         self.custom_system_prompt = system_prompt
+        self.db_session = db_session
+        self.config = config or ChatServiceConfig()
         
         self._llm: Optional[ChatOpenAI] = None
         self._tools: Optional[list] = None
@@ -91,17 +155,20 @@ class MainAgent:
         self._tracer: Optional[ExecutionTracer] = None
         self._messages: List = []
         
-        base_path = Path(__file__).parent.parent.parent.parent
-        skills_dirs = [
-            str(base_path / "skills"),
-            str(base_path / "skills_data"),
-        ]
-        
-        self.skill_manager = SkillManager(
-            skills_dir=skills_dirs,
-        )
-        self._active_skill = None
-        self._skills_initialized = False
+        if self.config.enable_skills:
+            base_path = Path(__file__).parent.parent.parent.parent
+            skills_dirs = [
+                str(base_path / "skills"),
+                str(base_path / "skills_data"),
+            ]
+            
+            self.skill_manager = SkillManager(skills_dir=skills_dirs)
+            self._active_skill = None
+            self._skills_initialized = False
+        else:
+            self.skill_manager = None
+            self._active_skill = None
+            self._skills_initialized = True
     
     @property
     def llm(self) -> ChatOpenAI:
@@ -136,13 +203,6 @@ class MainAgent:
         return await self.summarizer.summarize(messages)
     
     async def _store_summary_to_long_term(self, summary_content: str, message_count: int):
-        """
-        将摘要同步到长期记忆
-        
-        Args:
-            summary_content: 摘要内容
-            message_count: 被摘要的消息数量
-        """
         try:
             await self.long_term_memory.store(
                 content=summary_content,
@@ -151,33 +211,21 @@ class MainAgent:
                 tags=["auto_summary", f"messages_{message_count}"],
                 source_conversation_id=self.conversation_id,
             )
-            logger.info(f"[MainAgent] Summary synced to long-term memory: {message_count} messages")
+            logger.info(f"[ChatService] Summary synced to long-term memory: {message_count} messages")
         except Exception as e:
             logger.warning(f"Failed to sync summary to long-term memory: {e}")
     
     async def load_history_from_db(
         self,
-        db_session,
+        db_session: Optional[Any] = None,
         conversation_id: Optional[str] = None,
         limit: int = 20,
     ) -> int:
-        """
-        从数据库加载历史消息到短期记忆
-        
-        Args:
-            db_session: 数据库会话
-            conversation_id: 会话 ID (默认使用实例的 conversation_id)
-            limit: 最大加载消息数量
-            
-        Returns:
-            加载的消息数量
-        """
-        from sqlalchemy import select
-        from app.langchain.models.database import Message
-        
+        session = db_session or self.db_session
         conv_id = conversation_id or self.conversation_id
-        if not conv_id:
-            logger.warning("[MainAgent] No conversation_id provided, skipping history load")
+        
+        if not conv_id or not session:
+            logger.warning("[ChatService] No conversation_id or db_session provided")
             return 0
         
         with memory_trace_step("load_history_from_db", "general", {
@@ -185,7 +233,10 @@ class MainAgent:
             "limit": limit,
         }):
             try:
-                result = await db_session.execute(
+                from sqlalchemy import select
+                from app.langchain.models.database import Message
+                
+                result = await session.execute(
                     select(Message)
                     .where(Message.conversation_id == conv_id)
                     .order_by(Message.created_at.desc())
@@ -194,7 +245,6 @@ class MainAgent:
                 messages = list(reversed(result.scalars().all()))
                 
                 if not messages:
-                    logger.debug(f"[MainAgent] No history messages found for conversation {conv_id}")
                     return 0
                 
                 loaded_count = 0
@@ -207,18 +257,18 @@ class MainAgent:
                         self.short_term_memory.add_short_term_memory(SystemMessage(content=msg.content))
                     loaded_count += 1
                 
-                logger.info(f"[MainAgent] Loaded {loaded_count} history messages from DB for conversation {conv_id}")
+                logger.info(f"[ChatService] Loaded {loaded_count} history messages")
                 return loaded_count
                 
             except Exception as e:
-                logger.error(f"[MainAgent] Failed to load history from DB: {e}")
+                logger.error(f"[ChatService] Failed to load history: {e}")
                 return 0
     
     async def _build_system_prompt(self, user_message: str) -> str:
         if self.custom_system_prompt:
             return self.custom_system_prompt
         
-        if not self._skills_initialized:
+        if not self._skills_initialized and self.skill_manager:
             await self.skill_manager.initialize()
             self.skill_manager.set_llm(self.llm)
             self._skills_initialized = True
@@ -228,14 +278,15 @@ class MainAgent:
             soul_template = await self.prompt_loader.load("soul")
             tools_template = await self.prompt_loader.load("tools")
         except FileNotFoundError as e:
-            print(f"Prompt file not found: {e}")
+            logger.warning(f"Prompt file not found: {e}")
             return self._get_default_system_prompt()
         
-        memory_context = await self.long_term_memory.get_long_term_memory_for_query(
-            user_message,
-            max_tokens=2000,
-        )
-        self.prompt_context.set_memory_context(memory_context or "暂无相关记忆")
+        if self.config.enable_long_term_memory:
+            memory_context = await self.long_term_memory.get_long_term_memory_for_query(
+                user_message,
+                max_tokens=2000,
+            )
+            self.prompt_context.set_memory_context(memory_context or "暂无相关记忆")
         
         stats = self.short_term_memory.get_stats()
         self.injector.register_static("token_usage", stats.get("utilization", "0%"))
@@ -259,41 +310,32 @@ class MainAgent:
             tools_template=tools_template,
         )
         
-        with skill_trace_step("skill_matching", "agent", {
-            "user_message": user_message[:100] + "..." if len(user_message) > 100 else user_message,
-            "tools_count": len(self.tools),
-        }):
-            match_result = await self.skill_manager.match_request(
-                user_message,
-                [tool.name for tool in self.tools],
-            )
-        
-        if match_result.is_skill_match and match_result.skill:
-            self._active_skill = match_result.skill
+        if self.skill_manager:
+            with skill_trace_step("skill_matching", {
+                "user_message": user_message[:100] + "..." if len(user_message) > 100 else user_message,
+                "tools_count": len(self.tools),
+            }):
+                match_result = await self.skill_manager.match_request(
+                    user_message,
+                    [tool.name for tool in self.tools],
+                )
             
-            get_skill_tracer().trace("skill_activated", "agent", {
-                "skill_name": match_result.skill.meta.name,
-                "confidence": match_result.confidence,
-                "reasoning": match_result.reasoning,
-            })
-            
-            skill_prompt = self.skill_manager.build_skill_prompt([match_result.skill])
-            
-            final_prompt = f"{base_prompt}\n\n{skill_prompt}"
-            
-            get_skill_tracer().trace("prompt_with_skill", "agent", {
-                "base_prompt_len": len(base_prompt),
-                "skill_prompt_len": len(skill_prompt),
-                "total_len": len(final_prompt),
-            })
-            
-            return final_prompt
+            if match_result.is_skill_match and match_result.skill:
+                self._active_skill = match_result.skill
+                
+                get_skill_tracer().trace("skill_activated", "service", {
+                    "skill_name": match_result.skill.meta.name,
+                    "confidence": match_result.confidence,
+                    "reasoning": match_result.reasoning,
+                })
+                
+                skill_prompt = self.skill_manager.build_skill_prompt([match_result.skill])
+                
+                final_prompt = f"{base_prompt}\n\n{skill_prompt}"
+                
+                return final_prompt
         
         self._active_skill = None
-        
-        get_skill_tracer().trace("no_skill_matched", "agent", {
-            "reasoning": match_result.reasoning if match_result else "No match result",
-        })
         
         return base_prompt
     
@@ -333,7 +375,7 @@ class MainAgent:
         if tool_name in DANGEROUS_TOOLS:
             return f"⚠️ 工具 '{tool_name}' 被标记为危险工具（{DANGEROUS_TOOLS[tool_name]}），需要特殊权限才能执行。"
         
-        if self._active_skill:
+        if self._active_skill and self.skill_manager:
             allowed, reason = self.skill_manager.check_tool_permission(
                 tool_name, self._active_skill
             )
@@ -390,36 +432,44 @@ class MainAgent:
         
         self.short_term_memory.add_short_term_memory(SystemMessage(content=tool_summary))
         
-        logger.info(f"[MainAgent] Tool call recorded: {tool_name}")
+        logger.info(f"[ChatService] Tool call recorded: {tool_name}")
     
     async def chat(
         self,
         message: str,
-        db=None,
+        db: Optional[Any] = None,
         max_iterations: Optional[int] = None,
-    ) -> dict:
-        max_iterations = max_iterations or settings.AGENT_MAX_ITERATIONS
+        history_messages: Optional[List] = None,
+    ) -> ChatResult:
+        max_iterations = max_iterations or self.config.max_iterations
         self._tracer = ExecutionTracer(f"chat_{self.conversation_id or 'default'}")
         self._tracer.start()
         callback = self._create_callback_handler()
         
+        ctx = start_chat_trace(self.conversation_id or "default")
+        
         try:
-            self._tracer.step("load_mcp_tools")
-            await self._get_tools_with_mcp()
+            with trace_step("load_mcp_tools", {"message_len": len(message)}):
+                await self._get_tools_with_mcp()
             
-            self._tracer.step("build_system_prompt")
-            system_prompt = await self._build_system_prompt(message)
+            with trace_step("build_system_prompt", {"conversation_id": self.conversation_id}):
+                system_prompt = await self._build_system_prompt(message)
             
-            self._tracer.step("build_context")
-            self._messages = [SystemMessage(content=system_prompt)]
-            self._messages.extend(self._get_chat_history())
-            self._messages.append(HumanMessage(content=message))
+            with trace_step("build_context", {"history_turns": len(self._get_chat_history())}):
+                self._messages = [SystemMessage(content=system_prompt)]
+                
+                if history_messages:
+                    self._messages.extend(history_messages)
+                else:
+                    self._messages.extend(self._get_chat_history())
+                
+                self._messages.append(HumanMessage(content=message))
             
             llm_with_tools = self.llm.bind_tools(self.tools)
             
             all_tool_calls = []
             
-            self._tracer.step("agent_execution")
+            self._tracer.step("chat_execution")
             
             for iteration in range(max_iterations):
                 callback.on_llm_start({}, [str(self._messages[-1].content)])
@@ -437,12 +487,14 @@ class MainAgent:
                     
                     self._tracer.step("completed")
                     
-                    return {
-                        "output": response.content,
-                        "tool_calls": all_tool_calls if all_tool_calls else None,
-                        "trace": self._tracer.get_report(),
-                        "callback_summary": callback.get_summary(),
-                    }
+                    end_chat_trace(output=response.content[:100] if response.content else None)
+                    
+                    return ChatResult(
+                        output=response.content,
+                        tool_calls=all_tool_calls if all_tool_calls else None,
+                        trace=self._tracer.get_report(),
+                        callback_summary=callback.get_summary(),
+                    )
                 
                 for tool_call in response.tool_calls:
                     tool_name = tool_call["name"]
@@ -456,7 +508,8 @@ class MainAgent:
                     
                     callback.on_tool_start({"name": tool_name}, str(tool_args))
                     
-                    result = await self._execute_tool(tool_name, tool_args)
+                    with trace_step("tool_execution", {"tool_name": tool_name, "args": str(tool_args)[:100]}):
+                        result = await self._execute_tool(tool_name, tool_args)
                     
                     callback.on_tool_end(result, name=tool_name)
                     
@@ -467,25 +520,29 @@ class MainAgent:
             
             self._tracer.step("max_iterations_reached")
             
-            return {
-                "output": "达到最大迭代次数，任务未完成",
-                "tool_calls": all_tool_calls,
-                "trace": self._tracer.get_report(),
-                "callback_summary": callback.get_summary(),
-            }
+            end_chat_trace(error="Max iterations reached")
+            
+            return ChatResult(
+                output="达到最大迭代次数，任务未完成",
+                tool_calls=all_tool_calls,
+                trace=self._tracer.get_report(),
+                callback_summary=callback.get_summary(),
+            )
             
         except Exception as e:
             self._tracer.error(e)
+            end_chat_trace(error=str(e))
             raise
     
     async def chat_stream(
         self,
         message: str,
-        db=None,
+        db: Optional[Any] = None,
         max_iterations: Optional[int] = None,
         session_id: Optional[str] = None,
+        history_messages: Optional[List] = None,
     ) -> AsyncIterator[dict]:
-        max_iterations = max_iterations or settings.AGENT_MAX_ITERATIONS
+        max_iterations = max_iterations or self.config.max_iterations
         self._tracer = ExecutionTracer(f"chat_stream_{self.conversation_id or 'default'}")
         self._tracer.start()
         callback = self._create_callback_handler()
@@ -497,31 +554,38 @@ class MainAgent:
         
         await interrupt_manager.create_session(session_id, self.conversation_id)
         
-        logger.info(f"[MainAgent] chat_stream start: message_len={len(message)}, session_id={session_id}")
+        ctx = start_chat_trace(self.conversation_id or "default")
+        
+        logger.info(f"[ChatService] chat_stream start: message_len={len(message)}, session_id={session_id}")
         
         try:
             with trace_step("load_mcp_tools", {"message_len": len(message)}):
                 await self._get_tools_with_mcp()
-            logger.info(f"[MainAgent] Loaded {len(self.tools)} tools")
+            logger.info(f"[ChatService] Loaded {len(self.tools)} tools")
             
             with trace_step("build_system_prompt", {"conversation_id": self.conversation_id}):
                 system_prompt = await self._build_system_prompt(message)
-            logger.info(f"[MainAgent] System prompt built: len={len(system_prompt)}")
+            logger.info(f"[ChatService] System prompt built: len={len(system_prompt)}")
             
             with trace_step("build_context", {"history_turns": len(self._get_chat_history())}):
                 self._messages = [SystemMessage(content=system_prompt)]
-                self._messages.extend(self._get_chat_history())
+                
+                if history_messages:
+                    self._messages.extend(history_messages)
+                else:
+                    self._messages.extend(self._get_chat_history())
+                
                 self._messages.append(HumanMessage(content=message))
-            logger.info(f"[MainAgent] Context built: total_messages={len(self._messages)}")
+            logger.info(f"[ChatService] Context built: total_messages={len(self._messages)}")
             
             llm_with_tools = self.llm.bind_tools(self.tools)
             
             full_content = ""
             
-            self._tracer.step("agent_streaming")
+            self._tracer.step("chat_streaming")
             
             for iteration in range(max_iterations):
-                logger.info(f"[MainAgent] Starting iteration {iteration + 1}/{max_iterations}")
+                logger.info(f"[ChatService] Starting iteration {iteration + 1}/{max_iterations}")
                 
                 if await interrupt_manager.is_interrupted(session_id):
                     yield {
@@ -532,7 +596,6 @@ class MainAgent:
                     return
                 
                 iteration_content = ""
-                tool_calls_chunks = {}
                 tool_calls_by_index = {}
                 
                 with trace_step("llm_stream", {"iteration": iteration + 1}):
@@ -603,11 +666,13 @@ class MainAgent:
                 self._messages.append(ai_message)
                 
                 if not ai_message.tool_calls:
-                    logger.info(f"[MainAgent] No tool calls, finalizing response: content_len={len(full_content)}")
+                    logger.info(f"[ChatService] No tool calls, finalizing response: content_len={len(full_content)}")
                     
                     await self._finalize_conversation(message, full_content)
                     
                     self._tracer.step("completed")
+                    
+                    end_chat_trace(output=full_content[:100] if full_content else None)
                     
                     yield {
                         "type": "done",
@@ -616,7 +681,7 @@ class MainAgent:
                     }
                     return
                 
-                logger.info(f"[MainAgent] Tool calls detected: {[tc['name'] for tc in ai_message.tool_calls]}")
+                logger.info(f"[ChatService] Tool calls detected: {[tc['name'] for tc in ai_message.tool_calls]}")
                 
                 for tool_call in ai_message.tool_calls:
                     if await interrupt_manager.is_interrupted(session_id):
@@ -631,7 +696,7 @@ class MainAgent:
                     tool_args = tool_call["args"]
                     tool_id = tool_call.get("id", "")
                     
-                    logger.info(f"[MainAgent] Executing tool: {tool_name}, args={str(tool_args)[:100]}")
+                    logger.info(f"[ChatService] Executing tool: {tool_name}, args={str(tool_args)[:100]}")
                     
                     yield {
                         "type": "tool_call",
@@ -644,7 +709,7 @@ class MainAgent:
                     with trace_step("tool_execution", {"tool_name": tool_name, "args": str(tool_args)[:100]}):
                         result = await self._execute_tool(tool_name, tool_args)
                     
-                    logger.info(f"[MainAgent] Tool result: {tool_name} -> {str(result)[:200]}...")
+                    logger.info(f"[ChatService] Tool result: {tool_name} -> {str(result)[:200]}...")
                     
                     callback.on_tool_end(result, name=tool_name)
                     
@@ -659,8 +724,10 @@ class MainAgent:
                         tool_call_id=tool_id,
                     ))
             
-            logger.warning(f"[MainAgent] Max iterations reached: {max_iterations}")
+            logger.warning(f"[ChatService] Max iterations reached: {max_iterations}")
             self._tracer.step("max_iterations_reached")
+            
+            end_chat_trace(error="Max iterations reached")
             
             yield {
                 "type": "done",
@@ -669,22 +736,24 @@ class MainAgent:
             }
             
         except StreamInterruptedException as e:
-            logger.warning(f"[MainAgent] Stream interrupted: {e}")
+            logger.warning(f"[ChatService] Stream interrupted: {e}")
+            end_chat_trace(error=str(e))
             yield {
                 "type": "interrupted",
                 "content": full_content,
                 "message": str(e),
             }
         except Exception as e:
-            logger.error(f"[MainAgent] Error in chat_stream: {e}")
+            logger.error(f"[ChatService] Error in chat_stream: {e}")
             self._tracer.error(e)
+            end_chat_trace(error=str(e))
             yield {
                 "type": "error",
                 "error": str(e),
             }
         finally:
             await interrupt_manager.remove_session(session_id)
-            logger.info(f"[MainAgent] chat_stream end: session_id={session_id}")
+            logger.info(f"[ChatService] chat_stream end: session_id={session_id}")
     
     async def _finalize_conversation(self, user_message: str, assistant_response: str):
         with memory_trace_step("finalize_conversation", "general", {
@@ -695,22 +764,15 @@ class MainAgent:
             self.short_term_memory.add_short_term_memory(AIMessage(content=assistant_response))
             
             if self.short_term_memory.needs_summary:
-                logger.info(f"[MainAgent] Summary threshold reached, triggering summary")
+                logger.info(f"[ChatService] Summary threshold reached, triggering summary")
                 summary = await self.short_term_memory.check_and_summarize()
                 if summary:
-                    logger.info(f"[MainAgent] Summary generated: {summary.token_count} tokens")
+                    logger.info(f"[ChatService] Summary generated: {summary.token_count} tokens")
         
-        await self._store_to_long_term(user_message, assistant_response)
+        if self.config.enable_long_term_memory:
+            await self._store_to_long_term(user_message, assistant_response)
     
     async def _store_to_long_term(self, user_message: str, assistant_response: str):
-        """
-        增强的长期记忆存储逻辑
-        
-        1. 去重检查 - 避免存储相似内容
-        2. 评估重要性 - 只存储重要内容
-        3. 提取关键信息 - 作为标签存储
-        4. 存储完整对话
-        """
         try:
             content = f"用户: {user_message}\n助手: {assistant_response}"
             

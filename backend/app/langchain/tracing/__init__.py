@@ -1,3 +1,9 @@
+"""
+追踪模块
+
+提供统一的追踪功能，整合 RAG、Memory、Skill、Chat 等追踪
+"""
+
 from .execution import (
     TraceEvent,
     ExecutionTrace,
@@ -8,10 +14,49 @@ from .execution import (
 from .rag_trace import (
     RagTraceContext,
     RagTraceStep,
+    start_rag_trace as _start_rag_trace_legacy,
+    end_rag_trace as _end_rag_trace_legacy,
+    get_rag_trace as _get_rag_trace_legacy,
+    trace_step as _trace_step_legacy,
+)
+from .memory_trace import (
+    MemoryTraceStep,
+    MemoryTraceContext,
+    MemoryTraceStepContext,
+    MemoryTraceConfig,
+    memory_trace_config,
+    start_memory_trace as _start_memory_trace_legacy,
+    end_memory_trace as _end_memory_trace_legacy,
+    get_memory_trace as _get_memory_trace_legacy,
+    memory_trace_step as _memory_trace_step_legacy,
+    trace_memory_step,
+    configure_memory_trace,
+)
+from .unified_tracer import (
+    TraceStep,
+    UnifiedTraceContext,
+    TraceStepContext,
+    UnifiedTracer,
     start_rag_trace,
     end_rag_trace,
     get_rag_trace,
+    start_memory_trace,
+    end_memory_trace,
+    get_memory_trace,
+    start_skill_trace,
+    end_skill_trace,
+    start_chat_trace,
+    end_chat_trace,
+    start_search_trace,
+    end_search_trace,
+    end_trace,
     trace_step,
+    memory_trace_step,
+    skill_trace_step,
+    chat_trace_step,
+    traced,
+    get_unified_tracer,
+    get_trace,
 )
 
 __all__ = [
@@ -22,8 +67,35 @@ __all__ = [
     "get_tracer",
     "RagTraceContext",
     "RagTraceStep",
+    "MemoryTraceStep",
+    "MemoryTraceContext",
+    "MemoryTraceStepContext",
+    "MemoryTraceConfig",
+    "memory_trace_config",
+    "trace_memory_step",
+    "configure_memory_trace",
+    "TraceStep",
+    "UnifiedTraceContext",
+    "TraceStepContext",
+    "UnifiedTracer",
     "start_rag_trace",
     "end_rag_trace",
     "get_rag_trace",
+    "start_memory_trace",
+    "end_memory_trace",
+    "get_memory_trace",
+    "start_skill_trace",
+    "end_skill_trace",
+    "start_chat_trace",
+    "end_chat_trace",
+    "start_search_trace",
+    "end_search_trace",
+    "end_trace",
     "trace_step",
+    "memory_trace_step",
+    "skill_trace_step",
+    "chat_trace_step",
+    "traced",
+    "get_unified_tracer",
+    "get_trace",
 ]

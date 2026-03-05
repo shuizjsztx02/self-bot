@@ -77,6 +77,12 @@ class AgentStateManager:
             cls._instance = super().__new__(cls)
         return cls._instance
     
+    @classmethod
+    def get_instance(cls) -> "AgentStateManager":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
     async def create_session(
         self,
         conversation_id: Optional[str] = None,
@@ -160,4 +166,4 @@ class AgentStateManager:
 
 def get_state_manager() -> AgentStateManager:
     """获取状态管理器实例"""
-    return AgentStateManager()
+    return AgentStateManager.get_instance()

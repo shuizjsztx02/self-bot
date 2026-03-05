@@ -102,9 +102,10 @@ class Settings(BaseSettings):
     AGENT_MAX_ITERATIONS: int = 80
     RESEARCHER_MAX_ITERATIONS: int = 50
     
-    USE_LANGGRAPH: bool = True
-    LANGGRAPH_PARALLEL: bool = False
-    LANGGRAPH_TRAFFIC_RATIO: float = 1.0
+    LANGGRAPH_CHECKPOINT_ENABLED: bool = True
+    LANGGRAPH_CHECKPOINT_DB_PATH: str = "./data/database/checkpoint.db"
+    LANGGRAPH_CHECKPOINT_TTL_HOURS: int = 24
+    LANGGRAPH_CHECKPOINT_MAX_HISTORY: int = 100
 
     class Config:
         env_file = ".env"

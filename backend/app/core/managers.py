@@ -43,7 +43,7 @@ class GlobalManagers:
     @property
     def state_manager(self):
         if self._state_manager is None:
-            from app.langchain.agents.state import AgentStateManager
+            from app.langchain.services.state import AgentStateManager
             self._state_manager = AgentStateManager()
         return self._state_manager
     

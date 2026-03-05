@@ -1,7 +1,7 @@
 """
 RAG 适配器
 
-负责 RagChatResult/RagProcessResult 与 SupervisorState 之间的转换
+负责 RagService 结果与 SupervisorState 之间的转换
 """
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
@@ -37,7 +37,7 @@ class RagAdapter:
     """
     RAG 结果适配器
     
-    负责在 RAG Agent 结果和 SupervisorState 之间转换
+    负责 RagService 结果和 SupervisorState 之间转换
     """
     
     @staticmethod
@@ -46,7 +46,7 @@ class RagAdapter:
         将 RAG 结果写入状态
         
         Args:
-            result: RAG 结果 (RagChatResult, RagProcessResult, dict)
+            result: RAG 结果 (RagProcessResult, dict)
             state: 当前状态
             
         Returns:
@@ -120,6 +120,35 @@ class RagAdapter:
             documents=state.get("rag_documents", []),
             query_variations=state.get("rag_query_variations", []),
         )
+    
+    @staticmethod
+    def format_context_for_prompt(state: Dict[str, Any]) -> str:
+        """
+        格式化 RAG 上下文用于提示词
+        
+        Args:
+            state: 当前状态
+            
+        Returns:
+            格式化后的上下文字符串
+        """
+        context = state.get("rag_context", "")
+        if not context:
+            return ""
+        
+        sources = state.get("rag_sources", [])
+        
+        parts = ["[知识库检索结果]"]
+        parts.append(context)
+        
+        if sources:
+            parts.append("\n[来源]")
+            for i, source in enumerate(sources[:5], 1):
+                title = source.get("title", "未知来源")
+                score = source.get("score", 0)
+                parts.append(f"{i}. {title} (相关度: {score:.2f})")
+        
+        return "\n".join(parts)
     
     @staticmethod
     def _normalize_sources(sources: List[Any]) -> List[Dict[str, Any]]:

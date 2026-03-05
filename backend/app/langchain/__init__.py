@@ -1,13 +1,21 @@
 from .llm import get_llm
 from .tools import get_all_tools
-from .agents import MainAgent
+from .services import (
+    RagService,
+    ChatService,
+    SearchService,
+    agent_manager,
+)
 from .memory import ShortTermMemory, LongTermMemory, MemorySummarizer
 from .prompts import PromptLoader, VariableInjector, PromptContext
 
 __all__ = [
     "get_llm",
     "get_all_tools",
-    "MainAgent",
+    "RagService",
+    "ChatService",
+    "SearchService",
+    "agent_manager",
     "ShortTermMemory",
     "LongTermMemory",
     "MemorySummarizer",

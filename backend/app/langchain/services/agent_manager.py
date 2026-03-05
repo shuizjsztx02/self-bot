@@ -1,8 +1,9 @@
 """
 Agent 实例管理器
-实现 Agent 实例的缓存、生命周期管理和历史消息加载
+
+实现 Service 实例的缓存、生命周期管理和历史消息加载
 """
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from datetime import datetime, timezone, timedelta
 import asyncio
 import logging
@@ -15,9 +16,13 @@ class AgentManager:
     Agent 实例管理器
     
     职责:
-    1. 缓存活跃会话的 Agent 实例
+    1. 缓存活跃会话的 Service 实例
     2. 管理实例生命周期 (创建、获取、清理)
     3. 从数据库加载历史消息
+    
+    使用方式:
+        manager = AgentManager()
+        agent = await manager.get_agent(conversation_id, db_session)
     """
     
     _instance = None
@@ -34,7 +39,7 @@ class AgentManager:
         
         from app.config import settings
         
-        self._active_agents: Dict[str, any] = {}
+        self._active_agents: Dict[str, Any] = {}
         self._access_times: Dict[str, datetime] = {}
         self._ttl: int = getattr(settings, 'AGENT_CACHE_TTL', 3600)
         self._max_agents: int = getattr(settings, 'AGENT_CACHE_MAX_SIZE', 100)
@@ -51,7 +56,7 @@ class AgentManager:
         model: Optional[str] = None,
     ):
         """
-        获取或创建 Agent 实例
+        获取或创建 Service 实例
         
         Args:
             conversation_id: 会话 ID
@@ -60,7 +65,7 @@ class AgentManager:
             model: 模型名称
             
         Returns:
-            SupervisorAgent 实例
+            LangGraphService 实例
         """
         async with self._lock:
             from app.config import settings
@@ -72,9 +77,8 @@ class AgentManager:
                 
                 if history_enabled:
                     try:
-                        agent.shared_memory.clear()
-                        loaded_count = await agent.load_history(db_session, limit=history_limit)
-                        logger.info(f"Reloaded {loaded_count} history messages for cached agent: {conversation_id}")
+                        await self._reload_history(agent, db_session, history_limit)
+                        logger.info(f"Reloaded history for cached agent: {conversation_id}")
                     except Exception as e:
                         logger.warning(f"Failed to reload history for {conversation_id}: {e}")
                 
@@ -82,19 +86,17 @@ class AgentManager:
                 logger.debug(f"Agent cache hit: {conversation_id}")
                 return agent
             
-            from app.langchain.agents.supervisor_agent import SupervisorAgent
-            
-            agent = SupervisorAgent(
-                provider=provider,
-                model=model,
+            agent = await self._create_agent(
                 conversation_id=conversation_id,
                 db_session=db_session,
+                provider=provider,
+                model=model,
             )
             
             if history_enabled:
                 try:
-                    loaded_count = await agent.load_history(db_session, limit=history_limit)
-                    logger.info(f"Loaded {loaded_count} history messages for conversation {conversation_id}")
+                    await self._load_history(agent, db_session, history_limit)
+                    logger.info(f"Loaded history for conversation {conversation_id}")
                 except Exception as e:
                     logger.warning(f"Failed to load history for {conversation_id}: {e}")
             
@@ -107,6 +109,69 @@ class AgentManager:
                 await self._evict_oldest()
             
             return agent
+    
+    async def _create_agent(
+        self,
+        conversation_id: str,
+        db_session,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ):
+        """
+        创建新的 Service 实例
+        
+        Args:
+            conversation_id: 会话 ID
+            db_session: 数据库会话
+            provider: LLM 提供商
+            model: 模型名称
+            
+        Returns:
+            LangGraphService 实例
+        """
+        logger.info(f"[AgentManager] Creating LangGraphService for {conversation_id}")
+        from app.langchain.graph.service import LangGraphService
+        return LangGraphService(
+            conversation_id=conversation_id,
+            db_session=db_session,
+            provider=provider,
+            model=model,
+        )
+    
+    async def _load_history(self, agent: Any, db_session, limit: int) -> int:
+        """
+        加载历史消息
+        
+        Args:
+            agent: Service 实例
+            db_session: 数据库会话
+            limit: 加载限制
+            
+        Returns:
+            加载的消息数量
+        """
+        if hasattr(agent, 'load_history'):
+            return await agent.load_history(db_session, limit=limit)
+        return 0
+    
+    async def _reload_history(self, agent: Any, db_session, limit: int) -> int:
+        """
+        重新加载历史消息
+        
+        Args:
+            agent: Service 实例
+            db_session: 数据库会话
+            limit: 加载限制
+            
+        Returns:
+            加载的消息数量
+        """
+        if hasattr(agent, 'clear_memory'):
+            agent.clear_memory()
+        elif hasattr(agent, 'shared_memory') and hasattr(agent.shared_memory, 'clear'):
+            agent.shared_memory.clear()
+        
+        return await self._load_history(agent, db_session, limit)
     
     async def remove_agent(self, conversation_id: str) -> bool:
         """

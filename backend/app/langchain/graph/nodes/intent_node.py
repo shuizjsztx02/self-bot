@@ -7,7 +7,7 @@ import time
 import logging
 from typing import Dict, Any
 
-from app.langchain.graph.state import SupervisorState, StateAdapter, QueryIntent
+from app.langchain.graph.state import SupervisorState, StateAdapter, QueryIntent, get_db_session
 from app.langchain.graph.adapters.intent_adapter import IntentAdapter
 from app.langchain.llm import get_llm
 
@@ -38,7 +38,7 @@ async def classify_intent_node(state: SupervisorState) -> Dict[str, Any]:
         )
         
         llm = get_llm()
-        db_session = state.get("db_session")
+        db_session = get_db_session()
         
         classifier = IntentClassifier(llm=llm, db_session=db_session)
         
