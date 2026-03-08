@@ -99,8 +99,8 @@ class Settings(BaseSettings):
     
     PRELOAD_MCP_TOOLS: bool = False
     
-    AGENT_MAX_ITERATIONS: int = 80
-    RESEARCHER_MAX_ITERATIONS: int = 50
+    AGENT_MAX_ITERATIONS: int = 150
+    RESEARCHER_MAX_ITERATIONS: int = 80
     
     LANGGRAPH_CHECKPOINT_ENABLED: bool = True
     LANGGRAPH_CHECKPOINT_DB_PATH: str = "./data/database/checkpoint.db"

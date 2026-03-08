@@ -205,8 +205,12 @@ class PatternRecognizer:
         
         使用DBSCAN算法进行聚类
         """
-        # 转换为距离矩阵
+        # 确保相似度矩阵在[0, 1]范围内
+        similarity_matrix = np.clip(similarity_matrix, 0, 1)
+        
+        # 转换为距离矩阵，确保非负
         distance_matrix = 1 - similarity_matrix
+        distance_matrix = np.maximum(distance_matrix, 0)  # 确保非负
         
         # DBSCAN聚类
         clustering = DBSCAN(

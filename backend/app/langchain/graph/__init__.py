@@ -56,6 +56,8 @@ from .checkpointer import (
     CheckpointerManager,
     CheckpointerConfig,
     CheckpointInfo,
+    IncompleteExecution,
+    CheckpointerMetrics,
     get_checkpointer_manager,
 )
 
@@ -100,5 +102,7 @@ __all__ = [
     "CheckpointerManager",
     "CheckpointerConfig",
     "CheckpointInfo",
+    "IncompleteExecution",
+    "CheckpointerMetrics",
     "get_checkpointer_manager",
 ]

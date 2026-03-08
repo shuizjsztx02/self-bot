@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ChatServiceConfig:
     """Chat 服务配置"""
-    max_iterations: int = 10
+    max_iterations: int = field(default_factory=lambda: settings.AGENT_MAX_ITERATIONS)
     max_history_turns: int = 10
     max_context_tokens: int = 4000
     enable_skills: bool = True

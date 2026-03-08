@@ -481,6 +481,11 @@ class LangGraphService:
     def get_memory_stats(self) -> Dict[str, Any]:
         """获取内存统计信息"""
         shared_stats = self.shared_memory.get_stats()
+        
+        from app.langchain.graph.checkpointer import get_checkpointer_manager
+        manager = get_checkpointer_manager()
+        checkpointer_stats = manager.get_stats()
+        
         return {
             "conversation_id": self.conversation_id,
             "message_count": len(self.conversation_memory),
@@ -491,7 +496,45 @@ class LangGraphService:
                 "utilization": shared_stats.get("utilization", "0%"),
                 "summary_count": len(self.shared_memory.summaries),
             },
+            "checkpointer": checkpointer_stats,
         }
+    
+    async def detect_incomplete_execution(
+        self,
+        thread_id: Optional[str] = None,
+    ):
+        """
+        检测未完成的执行
+        
+        Args:
+            thread_id: 线程 ID (默认使用 conversation_id)
+            
+        Returns:
+            IncompleteExecution 或 None
+        """
+        effective_thread_id = thread_id or self.conversation_id
+        
+        if not effective_thread_id:
+            return None
+        
+        from app.langchain.graph.checkpointer import get_checkpointer_manager
+        
+        manager = get_checkpointer_manager()
+        return await manager.detect_incomplete_execution(effective_thread_id)
+    
+    async def get_checkpointer_metrics(self):
+        """获取 Checkpointer 运行指标"""
+        from app.langchain.graph.checkpointer import get_checkpointer_manager
+        
+        manager = get_checkpointer_manager()
+        return manager.get_metrics()
+    
+    async def cleanup_expired_checkpoints(self) -> int:
+        """清理过期的检查点"""
+        from app.langchain.graph.checkpointer import get_checkpointer_manager
+        
+        manager = get_checkpointer_manager()
+        return await manager.cleanup_expired()
 
 
 async def get_agent(

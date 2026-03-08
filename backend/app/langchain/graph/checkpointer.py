@@ -5,6 +5,9 @@ LangGraph Checkpointer 模块
 1. 会话状态持久化
 2. 断点恢复执行
 3. 状态历史查询
+4. 自动恢复机制
+5. TTL 过期清理
+6. 运行监控指标
 """
 from typing import Optional, AsyncIterator, Dict, Any, List
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -13,13 +16,28 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 import logging
 import json
+import asyncio
 
+import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.checkpoint.base import CheckpointTuple, Checkpoint
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+MSGPACK_ALLOWED_MODULES = [
+    ('app.knowledge_base.schemas', 'SearchResult'),
+    ('app.knowledge_base.schemas', 'DocumentChunk'),
+    ('app.knowledge_base.schemas', 'KnowledgeBase'),
+    ('app.langchain.graph.state', 'SupervisorState'),
+    ('app.langchain.graph.state', 'QueryIntent'),
+    ('app.langchain.graph.state', 'RouteDecision'),
+    ('app.langchain.graph.state', 'SourceReference'),
+    ('app.langchain.graph.state', 'ToolCallRecord'),
+]
 
 
 @dataclass
@@ -63,6 +81,73 @@ class CheckpointInfo:
         }
 
 
+@dataclass
+class IncompleteExecution:
+    """未完成的执行信息"""
+    thread_id: str
+    checkpoint_id: str
+    next_nodes: List[str]
+    created_at: Optional[datetime]
+    state_values: Dict[str, Any]
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "thread_id": self.thread_id,
+            "checkpoint_id": self.checkpoint_id,
+            "next_nodes": self.next_nodes,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "state_values": {k: str(v)[:100] for k, v in self.state_values.items()},
+        }
+
+
+@dataclass
+class CheckpointerMetrics:
+    """Checkpointer 运行指标"""
+    total_checkpoints: int = 0
+    total_threads: int = 0
+    db_size_bytes: int = 0
+    oldest_checkpoint: Optional[datetime] = None
+    newest_checkpoint: Optional[datetime] = None
+    incomplete_executions: int = 0
+    last_cleanup_time: Optional[datetime] = None
+    cleanup_count: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "total_checkpoints": self.total_checkpoints,
+            "total_threads": self.total_threads,
+            "db_size_mb": round(self.db_size_bytes / (1024 * 1024), 2),
+            "oldest_checkpoint": self.oldest_checkpoint.isoformat() if self.oldest_checkpoint else None,
+            "newest_checkpoint": self.newest_checkpoint.isoformat() if self.newest_checkpoint else None,
+            "incomplete_executions": self.incomplete_executions,
+            "last_cleanup_time": self.last_cleanup_time.isoformat() if self.last_cleanup_time else None,
+            "cleanup_count": self.cleanup_count,
+        }
+
+
+def create_serializer() -> JsonPlusSerializer:
+    """
+    创建带有允许列表的序列化器
+    
+    解决警告: "Deserializing unregistered type from checkpoint"
+    """
+    base_serializer = JsonPlusSerializer()
+    return base_serializer.with_msgpack_allowlist(MSGPACK_ALLOWED_MODULES)
+
+
+def _extract_timestamp_from_checkpoint(checkpoint_data: bytes) -> Optional[datetime]:
+    """从 checkpoint blob 中提取时间戳"""
+    try:
+        import msgpack
+        data = msgpack.unpackb(checkpoint_data, raw=False)
+        ts = data.get('ts')
+        if ts:
+            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    except Exception:
+        pass
+    return None
+
+
 class CheckpointerManager:
     """
     Checkpointer 管理器
@@ -70,16 +155,10 @@ class CheckpointerManager:
     负责:
     1. 创建和管理 AsyncSqliteSaver 实例
     2. 提供 checkpointer 生命周期管理
-    3. 清理过期检查点
+    3. 清理过期检查点 (TTL)
     4. 状态查询与恢复
-    
-    使用方式:
-        manager = CheckpointerManager()
-        saver = await manager.get_saver()
-        
-        # 或使用上下文管理器
-        async with manager.get_checkpointer() as saver:
-            ...
+    5. 自动恢复检测
+    6. 运行监控指标
     """
     
     _instance: Optional["CheckpointerManager"] = None
@@ -95,9 +174,11 @@ class CheckpointerManager:
             return
         self._config = CheckpointerConfig.from_settings()
         self._saver: Optional[AsyncSqliteSaver] = None
-        self._context_manager = None
+        self._conn: Optional[aiosqlite.Connection] = None
         self._exit_stack: Optional[AsyncExitStack] = None
         self._initialized = True
+        self._metrics: CheckpointerMetrics = CheckpointerMetrics()
+        self._cleanup_task: Optional[asyncio.Task] = None
         logger.info(f"[Checkpointer] Manager initialized, enabled={self._config.CHECKPOINT_ENABLED}")
     
     @property
@@ -111,12 +192,7 @@ class CheckpointerManager:
         return self._config.CHECKPOINT_DB_PATH
     
     async def get_saver(self) -> Optional[AsyncSqliteSaver]:
-        """
-        获取或创建 AsyncSqliteSaver 实例
-        
-        Returns:
-            AsyncSqliteSaver 实例，如果未启用则返回 None
-        """
+        """获取或创建 AsyncSqliteSaver 实例"""
         if not self.enabled:
             logger.debug("[Checkpointer] Checkpointer is disabled")
             return None
@@ -127,33 +203,67 @@ class CheckpointerManager:
             
             self._exit_stack = AsyncExitStack()
             
-            self._context_manager = AsyncSqliteSaver.from_conn_string(str(db_path))
+            self._conn = await self._exit_stack.enter_async_context(
+                aiosqlite.connect(str(db_path))
+            )
             
-            self._saver = await self._exit_stack.enter_async_context(self._context_manager)
+            serializer = create_serializer()
+            
+            self._saver = AsyncSqliteSaver(conn=self._conn, serde=serializer)
+            
+            await self._saver.setup()
+            
+            await self._update_metrics()
+            
+            self._start_cleanup_task()
             
             logger.info(f"[Checkpointer] AsyncSqliteSaver initialized with db: {db_path}")
         
         return self._saver
     
+    def _start_cleanup_task(self):
+        """启动定时清理任务"""
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+            logger.info("[Checkpointer] Started periodic cleanup task")
+    
+    async def _periodic_cleanup(self):
+        """定期清理过期检查点"""
+        while True:
+            try:
+                await asyncio.sleep(3600)
+                
+                deleted = await self.cleanup_expired()
+                if deleted > 0:
+                    logger.info(f"[Checkpointer] Periodic cleanup: deleted {deleted} expired checkpoints")
+                    self._metrics.last_cleanup_time = datetime.now(timezone.utc)
+                    self._metrics.cleanup_count += 1
+                    
+            except asyncio.CancelledError:
+                logger.info("[Checkpointer] Cleanup task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Checkpointer] Cleanup task error: {e}")
+    
     async def close(self):
         """关闭 checkpointer 连接"""
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+        
         if self._exit_stack is not None:
             await self._exit_stack.aclose()
             self._exit_stack = None
             self._saver = None
-            self._context_manager = None
+            self._conn = None
             logger.info("[Checkpointer] Closed")
     
     @asynccontextmanager
     async def get_checkpointer(self) -> AsyncIterator[Optional[AsyncSqliteSaver]]:
-        """
-        上下文管理器方式获取 checkpointer
-        
-        Usage:
-            async with manager.get_checkpointer() as saver:
-                if saver:
-                    graph = build_graph(checkpointer=saver)
-        """
+        """上下文管理器方式获取 checkpointer"""
         saver = await self.get_saver()
         try:
             yield saver
@@ -165,16 +275,7 @@ class CheckpointerManager:
         thread_id: str,
         checkpoint_id: Optional[str] = None,
     ) -> Optional[CheckpointTuple]:
-        """
-        获取指定的检查点
-        
-        Args:
-            thread_id: 线程 ID
-            checkpoint_id: 检查点 ID (可选，默认获取最新)
-            
-        Returns:
-            CheckpointTuple 或 None
-        """
+        """获取指定的检查点"""
         saver = await self.get_saver()
         if not saver:
             return None
@@ -196,16 +297,7 @@ class CheckpointerManager:
         thread_id: str,
         limit: int = 10,
     ) -> List[CheckpointInfo]:
-        """
-        列出指定线程的检查点
-        
-        Args:
-            thread_id: 线程 ID
-            limit: 最大返回数量
-            
-        Returns:
-            CheckpointInfo 列表
-        """
+        """列出指定线程的检查点"""
         saver = await self.get_saver()
         if not saver:
             return []
@@ -225,13 +317,19 @@ class CheckpointerManager:
                 cp_config = checkpoint_tuple.config or {}
                 configurable = cp_config.get("configurable", {})
                 
+                created_at = None
+                if hasattr(checkpoint_tuple, 'created_at') and checkpoint_tuple.created_at:
+                    created_at = checkpoint_tuple.created_at
+                elif hasattr(checkpoint_tuple, 'checkpoint') and checkpoint_tuple.checkpoint:
+                    created_at = _extract_timestamp_from_checkpoint(checkpoint_tuple.checkpoint)
+                
                 info = CheckpointInfo(
                     thread_id=thread_id,
                     checkpoint_id=configurable.get("checkpoint_id", ""),
                     checkpoint_ns=configurable.get("checkpoint_ns", ""),
                     parent_checkpoint_id=None,
                     metadata=checkpoint_tuple.metadata or {},
-                    created_at=checkpoint_tuple.created_at if hasattr(checkpoint_tuple, 'created_at') else None,
+                    created_at=created_at,
                 )
                 checkpoints.append(info)
         except Exception as e:
@@ -239,25 +337,194 @@ class CheckpointerManager:
         
         return checkpoints
     
-    async def clear_thread(self, thread_id: str) -> int:
-        """
-        清除指定线程的所有检查点
+    async def detect_incomplete_execution(
+        self,
+        thread_id: str,
+    ) -> Optional[IncompleteExecution]:
+        """检测未完成的执行"""
+        saver = await self.get_saver()
+        if not saver:
+            return None
         
-        注意: AsyncSqliteSaver 没有直接的删除方法
-        需要通过重新创建数据库或使用其他方式清理
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+            }
+        }
         
-        Args:
-            thread_id: 线程 ID
+        try:
+            state_snapshot = await saver.aget_tuple(config)
             
-        Returns:
-            删除的检查点数量 (估算)
-        """
-        checkpoints = await self.list_checkpoints(thread_id, limit=1000)
-        count = len(checkpoints)
+            if state_snapshot and hasattr(state_snapshot, 'pending') and state_snapshot.pending:
+                pending_writes = state_snapshot.pending
+                next_nodes = list(set([w[1] for w in pending_writes if len(w) > 1]))
+                
+                created_at = None
+                if hasattr(state_snapshot, 'created_at') and state_snapshot.created_at:
+                    created_at = state_snapshot.created_at
+                elif hasattr(state_snapshot, 'checkpoint') and state_snapshot.checkpoint:
+                    created_at = _extract_timestamp_from_checkpoint(state_snapshot.checkpoint)
+                
+                return IncompleteExecution(
+                    thread_id=thread_id,
+                    checkpoint_id=config.get("configurable", {}).get("checkpoint_id", ""),
+                    next_nodes=next_nodes,
+                    created_at=created_at,
+                    state_values=state_snapshot.checkpoint.get('channel_values', {}) if state_snapshot.checkpoint else {},
+                )
+            
+            if state_snapshot and hasattr(state_snapshot, 'checkpoint') and state_snapshot.checkpoint:
+                channel_values = state_snapshot.checkpoint.get('channel_values', {})
+                if channel_values.get('next') or channel_values.get('__pending__'):
+                    created_at = _extract_timestamp_from_checkpoint(state_snapshot.checkpoint)
+                    
+                    return IncompleteExecution(
+                        thread_id=thread_id,
+                        checkpoint_id=config.get("configurable", {}).get("checkpoint_id", ""),
+                        next_nodes=list(channel_values.get('next', [])),
+                        created_at=created_at,
+                        state_values=channel_values,
+                    )
+            
+        except Exception as e:
+            logger.debug(f"[Checkpointer] No incomplete execution found for {thread_id}: {e}")
         
-        logger.info(f"[Checkpointer] Found {count} checkpoints for thread {thread_id}")
+        return None
+    
+    async def list_all_incomplete_executions(
+        self,
+        limit: int = 100,
+    ) -> List[IncompleteExecution]:
+        """列出所有未完成的执行"""
+        incomplete = []
         
-        return count
+        try:
+            if self._conn:
+                async with self._conn.execute(
+                    "SELECT DISTINCT thread_id FROM checkpoints LIMIT ?",
+                    (limit,)
+                ) as cursor:
+                    async for row in cursor:
+                        thread_id = row[0]
+                        execution = await self.detect_incomplete_execution(thread_id)
+                        if execution:
+                            incomplete.append(execution)
+        except Exception as e:
+            logger.error(f"[Checkpointer] Failed to list incomplete executions: {e}")
+        
+        return incomplete
+    
+    async def clear_thread(self, thread_id: str) -> int:
+        """清除指定线程的所有检查点"""
+        if not self._conn:
+            logger.warning("[Checkpointer] No connection available for clearing")
+            return 0
+        
+        try:
+            cursor = await self._conn.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?",
+                (thread_id,)
+            )
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            
+            await self._conn.execute(
+                "DELETE FROM checkpoints WHERE thread_id = ?",
+                (thread_id,)
+            )
+            await self._conn.commit()
+            
+            await self._conn.execute(
+                "DELETE FROM writes WHERE thread_id = ?",
+                (thread_id,)
+            )
+            await self._conn.commit()
+            
+            logger.info(f"[Checkpointer] Cleared {count} checkpoints for thread {thread_id}")
+            
+            await self._update_metrics()
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"[Checkpointer] Failed to clear thread: {e}")
+            return 0
+    
+    async def cleanup_expired(self) -> int:
+        """清理过期的检查点"""
+        if not self._conn:
+            return 0
+        
+        try:
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=self._config.CHECKPOINT_TTL_HOURS)
+            
+            cursor = await self._conn.execute(
+                "SELECT thread_id, checkpoint FROM checkpoints"
+            )
+            rows = await cursor.fetchall()
+            
+            expired_threads = set()
+            for row in rows:
+                thread_id = row[0]
+                checkpoint_data = row[1]
+                timestamp = _extract_timestamp_from_checkpoint(checkpoint_data)
+                
+                if timestamp and timestamp < cutoff_time:
+                    expired_threads.add(thread_id)
+            
+            total_deleted = 0
+            for thread_id in expired_threads:
+                count = await self.clear_thread(thread_id)
+                total_deleted += count
+            
+            if total_deleted > 0:
+                logger.info(f"[Checkpointer] Cleaned up {total_deleted} expired checkpoints (older than {cutoff_time.isoformat()})")
+            
+            await self._update_metrics()
+            
+            return total_deleted
+            
+        except Exception as e:
+            logger.error(f"[Checkpointer] Failed to cleanup expired: {e}")
+            return 0
+    
+    async def _update_metrics(self):
+        """更新运行指标"""
+        if not self._conn:
+            return
+        
+        try:
+            cursor = await self._conn.execute("SELECT COUNT(*) FROM checkpoints")
+            row = await cursor.fetchone()
+            self._metrics.total_checkpoints = row[0] if row else 0
+            
+            cursor = await self._conn.execute("SELECT COUNT(DISTINCT thread_id) FROM checkpoints")
+            row = await cursor.fetchone()
+            self._metrics.total_threads = row[0] if row else 0
+            
+            cursor = await self._conn.execute("SELECT checkpoint FROM checkpoints ORDER BY rowid ASC LIMIT 1")
+            row = await cursor.fetchone()
+            if row and row[0]:
+                self._metrics.oldest_checkpoint = _extract_timestamp_from_checkpoint(row[0])
+            
+            cursor = await self._conn.execute("SELECT checkpoint FROM checkpoints ORDER BY rowid DESC LIMIT 1")
+            row = await cursor.fetchone()
+            if row and row[0]:
+                self._metrics.newest_checkpoint = _extract_timestamp_from_checkpoint(row[0])
+            
+            db_path = Path(self.db_path)
+            if db_path.exists():
+                self._metrics.db_size_bytes = db_path.stat().st_size
+            
+            incomplete = await self.list_all_incomplete_executions(limit=1000)
+            self._metrics.incomplete_executions = len(incomplete)
+            
+        except Exception as e:
+            logger.error(f"[Checkpointer] Failed to update metrics: {e}")
+    
+    def get_metrics(self) -> CheckpointerMetrics:
+        """获取 Checkpointer 运行指标"""
+        return self._metrics
     
     def get_stats(self) -> Dict[str, Any]:
         """获取 Checkpointer 统计信息"""
@@ -269,6 +536,7 @@ class CheckpointerManager:
                 "ttl_hours": self._config.CHECKPOINT_TTL_HOURS,
                 "max_history": self._config.CHECKPOINT_MAX_HISTORY,
             },
+            "metrics": self._metrics.to_dict(),
         }
 
 
