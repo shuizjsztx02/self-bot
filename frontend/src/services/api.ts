@@ -235,6 +235,56 @@ export const chatApi = {
     const response = await api.get('/chat/sessions')
     return response.data
   },
+
+  confirmSkillInstall: async (
+    data: {
+      skill_slug: string
+      install_pip: boolean
+      install_npm: boolean
+      install_mcp: boolean
+      install_bins?: boolean
+      env_vars?: Record<string, string>
+    },
+    onMessage: (event: any) => void,
+  ): Promise<void> => {
+    const token = localStorage.getItem('token')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+
+    const response = await fetch('/api/skills/confirm-install', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    })
+
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (!reader) return
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value)
+      const lines = chunk.split('\n')
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const event = JSON.parse(line.slice(6))
+            onMessage(event)
+          } catch {
+            // ignore parse errors
+          }
+        }
+      }
+    }
+  },
 }
 
 export default api

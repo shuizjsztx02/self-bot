@@ -51,32 +51,48 @@ def setup_langsmith():
 
 
 async def preload_mcp_tools():
-    """预加载 MCP 工具"""
+    """通过 Registry 预加载所有 MCP 工具（触发每个 MCP lazy loader）"""
     print("\n" + "=" * 50)
-    print("预加载 MCP 工具...")
+    print("预加载 MCP 工具（通过 Registry）...")
     print("=" * 50)
-    
+
     try:
-        from app.mcp import get_all_mcp_tools
-        tools = await get_all_mcp_tools()
+        from app.langchain.tools.registry import get_registry
+        from app.langchain.tools.metadata import ToolSource
+
+        registry = get_registry()
+        mcp_names = registry.get_by_source(ToolSource.MCP)
+        tools = await registry.get_tools_async(names=mcp_names, load_lazy=True)
         print(f"✅ 成功预加载 {len(tools)} 个 MCP 工具")
     except Exception as e:
         print(f"⚠️ MCP 工具预加载失败: {e}")
-    
+
     print("=" * 50 + "\n")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_device_status()
-    
+
     await init_db()
-    
+
+    # 初始化工具注册中心（本地工具 + MCP 懒加载器注册）
+    print("\n" + "=" * 50)
+    print("初始化工具注册中心...")
+    print("=" * 50)
+    try:
+        from app.langchain.tools import initialize_tools
+        await initialize_tools()
+        print("✅ 工具注册中心初始化完成")
+    except Exception as e:
+        print(f"⚠️ 工具注册中心初始化失败: {e}")
+    print("=" * 50 + "\n")
+
     if settings.PRELOAD_MCP_TOOLS:
         await preload_mcp_tools()
     else:
         print("\n" + "=" * 50)
-        print("⚠️ MCP 工具预加载已禁用 (PRELOAD_MCP_TOOLS=False)")
+        print("⚠️ MCP 工具预加载已禁用 (PRELOAD_MCP_TOOLS=False)，将在首次使用时懒加载")
         print("   如需启用，请在 .env 中设置 PRELOAD_MCP_TOOLS=true")
         print("=" * 50 + "\n")
     
@@ -103,7 +119,26 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # 🆕 自进化系统集成：关闭EvolutionMonitor
+    print("\n" + "=" * 50)
+    print("关闭服务...")
+    print("=" * 50)
+    
+    try:
+        from app.core.managers import get_global_managers
+        managers = get_global_managers()
+        await managers.cleanup_all()
+        print("✅ MCP 工具已清理")
+    except Exception as e:
+        print(f"⚠️ MCP 清理失败: {e}")
+    
+    try:
+        from app.langchain.graph.checkpointer import get_checkpointer_manager
+        checkpointer = get_checkpointer_manager()
+        await checkpointer.close()
+        print("✅ Checkpointer 已关闭")
+    except Exception as e:
+        print(f"⚠️ Checkpointer 清理失败: {e}")
+    
     if evolution_settings.EVOLUTION_ENABLED:
         print("\n" + "=" * 50)
         print("关闭自进化系统...")

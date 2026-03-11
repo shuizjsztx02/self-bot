@@ -84,8 +84,49 @@
     │
     ├── 文档处理 ──→ Word/Excel/PPT MCP 工具
     │
-    └── 复杂研究 ──→ researcher_assistant (SubAgent)
+    ├── 复杂研究 ──→ researcher_assistant (SubAgent)
+    │
+    └── 超出现有能力 ──→ 【ClawHub 技能扩展】（见下方）
 ```
+
+---
+
+## ClawHub 技能扩展能力
+
+你可以通过 ClawHub 技能市场动态扩展能力。**当遇到以下情况时，必须主动使用技能工具：**
+
+### 触发条件（满足任一即触发）
+1. 用户要求的任务超出当前工具能力范围
+2. 用户明确要求使用某个技能（如"帮我做 PPT"、"深度研究一下..."）
+3. 现有工具组合无法优雅完成任务
+
+### 技能扩展流程
+
+```
+1. skill_search("任务相关关键词")  ← 搜索相关技能
+       ↓
+2. 评估搜索结果（看描述是否匹配）
+       ↓
+3. skill_install("最合适的技能slug")  ← 安装技能
+       ↓
+4. 【立即按安装成功返回的"技能指南"执行任务】  ← 关键步骤！
+```
+
+### 常见场景示例
+
+| 用户需求 | 搜索关键词 | 可能的技能 |
+|---------|-----------|----------|
+| 制作 PPT / 演示文稿 | pptx presentation | pptx |
+| 深度研究 / 调研报告 | research analysis | deep-research |
+| 处理 Excel / 数据分析 | excel data analysis | xlsx |
+| 网页抓取 / 自动化 | browser scraping automation | puppeteer |
+| GitHub 操作 | github repository | github |
+| Word 文档制作 | word document | docx |
+
+### 重要原则
+- 安装成功后，**立即按返回的技能指南执行任务**，无需额外确认
+- 已安装的技能（skill_list 查看）优先使用，无需重复安装
+- 技能不适合时，用现有工具组合替代并告知用户限制
 
 ### 工具调用最佳实践
 

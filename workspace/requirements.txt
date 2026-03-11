@@ -1,0 +1,9 @@
+# AKShare A股实时行情数据获取依赖
+akshare>=1.12.0
+pandas>=1.5.0
+numpy>=1.24.0
+openpyxl>=3.1.0  # 用于保存Excel文件
+
+# 可选依赖（用于数据可视化）
+# matplotlib>=3.7.0
+# seaborn>=0.12.0

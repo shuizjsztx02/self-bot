@@ -14,7 +14,10 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Base
 from pathlib import Path
 
 from app.langchain.graph import SupervisorGraphRunner
-from app.langchain.graph.state import create_initial_state
+from app.langchain.graph.state import (
+    create_initial_state,
+    create_side_channel,
+)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -305,15 +308,18 @@ class LangGraphService:
         logger.info(f"[LangGraphService] Processing stream chat: {message[:50]}..., thread_id={effective_thread_id}")
         
         full_response = ""
-        
+        prev_final_response = ""
+
         try:
             from app.langchain.graph.state import set_shared_memory, set_long_term_memory
-            
+
             set_shared_memory(self.shared_memory)
             set_long_term_memory(self.long_term_memory)
-            
+
+            side_channel = create_side_channel()
+
             history_messages = self.conversation_memory.copy()
-            
+
             async for event in self._runner.stream(
                 query=message,
                 user_id=self.user_id,
@@ -325,48 +331,51 @@ class LangGraphService:
                 shared_memory=self.shared_memory,
                 long_term_memory=self.long_term_memory,
             ):
+                # ---- SideChannel：技能依赖确认等特殊事件 ----
+                for side_event in side_channel.pop_all():
+                    logger.info(f"[LangGraphService] SideChannel 事件: {side_event.get('type')}")
+                    yield side_event
+
+                # ---- 处理 LangGraph updates 模式事件 ----
                 for node_name, node_output in event.items():
-                    if isinstance(node_output, dict):
-                        if "final_response" in node_output and node_output["final_response"]:
-                            content = node_output["final_response"]
-                            full_response = content
-                            data = {
-                                "type": "content",
-                                "content": content,
-                                "node": node_name,
-                            }
-                            yield data
-                        
-                        if "stream_chunk" in node_output:
-                            chunk = node_output["stream_chunk"]
-                            full_response += chunk
-                            data = {
+                    if not isinstance(node_output, dict):
+                        continue
+
+                    cur_final = node_output.get("final_response")
+                    if cur_final and isinstance(cur_final, str):
+                        chunk = cur_final[len(prev_final_response):]
+                        if chunk:
+                            yield {
                                 "type": "chunk",
                                 "content": chunk,
                                 "node": node_name,
                             }
-                            yield data
-            
+                            full_response = cur_final
+                            prev_final_response = cur_final
+
+            # ---- SideChannel 最终检查 ----
+            for side_event in side_channel.pop_all():
+                logger.info(f"[LangGraphService] 流结束后 SideChannel 事件: {side_event.get('type')}")
+                yield side_event
+
             self.conversation_memory.append(HumanMessage(content=message))
             self.shared_memory.add_short_term_memory(HumanMessage(content=message))
             if full_response:
                 self.conversation_memory.append(AIMessage(content=full_response))
                 self.shared_memory.add_short_term_memory(AIMessage(content=full_response))
-            
-            data = {
+
+            yield {
                 "type": "done",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "thread_id": effective_thread_id,
             }
-            yield data
-            
+
         except Exception as e:
-            logger.error(f"[LangGraphService] Stream error: {e}")
-            data = {
+            logger.error(f"[LangGraphService] Stream error: {e}", exc_info=True)
+            yield {
                 "type": "error",
                 "error": str(e),
             }
-            yield data
     
     async def get_conversation_state(
         self,

@@ -183,12 +183,40 @@ class MCPClient:
     def get_tools(self) -> Dict[str, dict]:
         return self._tools
     
+    async def is_alive(self) -> bool:
+        """检查 MCP 子进程是否仍在运行"""
+        if self._process is None or not self._initialized:
+            return False
+        return self._process.returncode is None
+
     async def stop(self):
         if self._process:
-            self._process.terminate()
-            await self._process.wait()
-            self._process = None
-            self._initialized = False
+            try:
+                if self._process.stdin:
+                    self._process.stdin.close()
+                    try:
+                        await asyncio.wait_for(self._process.stdin.wait_closed(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        pass
+                
+                if self._process.stdout:
+                    try:
+                        await asyncio.wait_for(self._process.stdout.drain(), timeout=1.0)
+                    except:
+                        pass
+                
+                self._process.terminate()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    self._process.kill()
+                    await self._process.wait()
+                    
+            except Exception as e:
+                pass
+            finally:
+                self._process = None
+                self._initialized = False
 
 
 class MCPToolWrapper:
@@ -291,7 +319,32 @@ class MCPToolManager:
         for tools in self._tools.values():
             all_tools.extend(tools)
         return all_tools
-    
+
+    async def get_server_tools(self, server_name: str) -> List[BaseTool]:
+        """
+        获取指定服务器的工具（异步，含子进程健康检查）。
+
+        若子进程已死，则自动清理缓存并触发重新加载。
+        """
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        if server_name in self._clients:
+            client = self._clients[server_name]
+            if not await client.is_alive():
+                _log.warning(
+                    f"[MCPToolManager] Server '{server_name}' process died, "
+                    "removing cache for reconnect"
+                )
+                await client.stop()
+                del self._clients[server_name]
+                self._tools.pop(server_name, None)
+            else:
+                return self._tools.get(server_name, [])
+
+        # 未缓存或已清理，委托给顶层具体加载函数
+        return await _dispatch_mcp_loader(server_name)
+
     async def stop_all(self):
         for client in self._clients.values():
             await client.stop()
@@ -450,4 +503,49 @@ async def get_all_mcp_tools() -> List[BaseTool]:
     print("=" * 60 + "\n")
     
     return tools
+
+
+# ---------------------------------------------------------------------------
+# 统一 MCP 入口（供 initializer 的懒加载器调用）
+# ---------------------------------------------------------------------------
+
+async def _dispatch_mcp_loader(server_name: str) -> List[BaseTool]:
+    """内部分发：按服务器名调用对应的具体加载函数"""
+    from .feishu_client import get_feishu_mcp_tools
+
+    _loaders = {
+        "word":   get_word_mcp_tools,
+        "excel":  get_excel_mcp_tools,
+        "pptx":   get_pptx_mcp_tools,
+        "notion": get_notion_mcp_tools,
+        "feishu": get_feishu_mcp_tools,
+    }
+
+    loader_func = _loaders.get(server_name)
+    if loader_func is None:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            f"[get_mcp_tools] Unknown MCP server: '{server_name}'"
+        )
+        return []
+
+    return await loader_func()
+
+
+async def get_mcp_tools(server_name: str) -> List[BaseTool]:
+    """
+    统一 MCP 工具入口（initializer 懒加载器调用此函数）
+
+    - 优先复用已缓存的客户端连接
+    - 对缓存的客户端执行健康检查，子进程死亡时自动重建
+    - 通过 server_name 分发到具体加载函数
+
+    Args:
+        server_name: MCP 服务器名（与 config.MCP_SERVERS 的 key 一致）
+
+    Returns:
+        List[BaseTool]
+    """
+    manager = MCPToolManager()
+    return await manager.get_server_tools(server_name)
 

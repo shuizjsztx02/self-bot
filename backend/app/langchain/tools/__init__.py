@@ -1,42 +1,43 @@
-from .file_tools import read_file, write_file, list_directory, delete_file, copy_file, move_file
-from .code_tools import execute_code
-from .system_tools import calculator, current_time, json_parser
-from .search_tools import tavily_search, duckduckgo_search, serpapi_search
+"""
+工具模块公共接口
+
+主要入口：
+- get_all_tools()          同步，获取所有已加载的本地工具
+- get_tools_for_query()    异步，根据用户查询动态选择工具（含 MCP 懒加载）
+"""
+
+from typing import List
+
+from langchain_core.tools import BaseTool
+
+from .metadata import ToolSource, ToolStatus, ToolMetadata, ToolEntry
+from .registry import ToolRegistry, get_registry
+from .initializer import ToolInitializer, initialize_tools, get_initializer, reset_initializer
+from .selector import ToolSelectionResult, ToolSelector, get_tool_selector, reset_tool_selector
 
 
-def get_all_tools():
-    return [
-        read_file, write_file, list_directory, delete_file, copy_file, move_file,
-        execute_code,
-        calculator, current_time, json_parser,
-        tavily_search, duckduckgo_search, serpapi_search,
-    ]
+def get_all_tools() -> List[BaseTool]:
+    """获取所有已加载的本地工具（同步）"""
+    return get_registry().get_tools(source=ToolSource.LOCAL)
 
 
-def get_file_tools():
-    return [read_file, write_file, list_directory, delete_file, copy_file, move_file]
+async def get_tools_for_query(query: str = "") -> List[BaseTool]:
+    """
+    根据用户查询动态选择工具（异步，触发 MCP 懒加载）
+
+    这是 ChatService 的统一入口。选择器会：
+    1. 始终包含核心工具（system/search/file 非危险）
+    2. 根据 query 关键词按需加载扩展工具（含 MCP 服务器）
+    """
+    selector = await get_tool_selector()
+    return await selector.get_tools_for_query(query)
 
 
-def get_code_tools():
-    return [execute_code]
-
-
-def get_system_tools():
-    return [calculator, current_time, json_parser]
-
-
-def get_search_tools():
-    return [tavily_search, duckduckgo_search, serpapi_search]
-
-
-async def get_all_tools_with_mcp():
-    tools = get_all_tools()
-    
-    try:
-        from app.mcp import get_all_mcp_tools
-        mcp_tools = await get_all_mcp_tools()
-        tools.extend(mcp_tools)
-    except Exception as e:
-        print(f"Warning: Failed to load MCP tools: {e}")
-    
-    return tools
+__all__ = [
+    "get_all_tools",
+    "get_tools_for_query",
+    "ToolSource", "ToolStatus", "ToolMetadata", "ToolEntry",
+    "ToolRegistry", "get_registry",
+    "ToolInitializer", "initialize_tools", "get_initializer", "reset_initializer",
+    "ToolSelectionResult", "ToolSelector", "get_tool_selector", "reset_tool_selector",
+]

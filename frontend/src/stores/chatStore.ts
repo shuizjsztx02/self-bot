@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { Conversation, Message, Settings } from '../types'
 import { chatApi } from '../services/api'
+import type { PendingSkillInstall } from '../components/SkillInstallDialog'
 
 interface ChatState {
   conversations: Conversation[]
@@ -12,6 +13,8 @@ interface ChatState {
   streamingContent: string
   currentSessionId: string | null
   abortController: { abort: () => void } | null
+  pendingSkillInstall: PendingSkillInstall | null
+  skillInstallProgress: { step: string; detail: string; progress: number } | null
 
   loadSettings: () => Promise<void>
   loadConversations: () => Promise<void>
@@ -22,6 +25,8 @@ interface ChatState {
   sendMessage: (content: string) => Promise<void>
   interruptStream: () => Promise<void>
   clearCurrentConversation: () => void
+  setPendingSkillInstall: (data: PendingSkillInstall | null) => void
+  setSkillInstallProgress: (data: { step: string; detail: string; progress: number } | null) => void
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -34,6 +39,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingContent: '',
   currentSessionId: null,
   abortController: null,
+  pendingSkillInstall: null,
+  skillInstallProgress: null,
 
   loadSettings: async () => {
     try {
@@ -148,7 +155,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 messages: [],
               }
             }))
-          } else if (event.type === 'content') {
+          } else if (event.type === 'content' || event.type === 'chunk') {
             set((state) => ({
               streamingContent: state.streamingContent + event.content,
             }))
@@ -227,6 +234,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
               abortController: null,
             })
             get().loadConversations()
+          } else if (event.type === 'skill_dependency_confirm') {
+            set({
+              pendingSkillInstall: {
+                visible: true,
+                skillName: event.skill_name,
+                skillSlug: event.skill_slug,
+                missing: event.missing,
+                message: event.message,
+              },
+            })
+          } else if (event.type === 'skill_ready') {
+            set({ pendingSkillInstall: null, skillInstallProgress: null })
+            const readyMessage: Message = {
+              id: `skill_ready_${Date.now()}`,
+              role: 'assistant',
+              content: `${event.skill_name || 'Skill'}: ${event.message || 'Dependencies installed, skill is ready.'}`,
+              created_at: new Date().toISOString(),
+            }
+            set((state) => ({
+              messages: [...state.messages, readyMessage],
+            }))
+          } else if (event.type === 'skill_install_progress') {
+            set({
+              skillInstallProgress: {
+                step: event.step,
+                detail: event.detail,
+                progress: event.progress,
+              },
+            })
+          } else if (event.type === 'skill_install_failed') {
+            set({ skillInstallProgress: null })
+            const failMessage: Message = {
+              id: `skill_fail_${Date.now()}`,
+              role: 'assistant',
+              content: `${event.skill_name || 'Skill'}: ${event.message || 'Installation failed.'}`,
+              created_at: new Date().toISOString(),
+            }
+            set((state) => ({
+              messages: [...state.messages, failMessage],
+            }))
           } else if (event.type === 'error') {
             console.error('Stream error:', event.error)
             const errorMessage: Message = {
@@ -305,5 +352,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentConversation: null,
       messages: [],
     })
+  },
+
+  setPendingSkillInstall: (data) => {
+    set({ pendingSkillInstall: data })
+  },
+
+  setSkillInstallProgress: (data) => {
+    set({ skillInstallProgress: data })
   },
 }))

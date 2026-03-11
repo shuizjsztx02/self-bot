@@ -69,3 +69,12 @@ class MemorySearchRequest(BaseModel):
     query: str
     limit: int = 10
     memory_type: Optional[str] = None
+
+
+class SkillInstallConfirmRequest(BaseModel):
+    skill_slug: str
+    install_pip: bool = True
+    install_npm: bool = True
+    install_mcp: bool = True
+    install_bins: bool = True
+    env_vars: Optional[dict[str, str]] = None

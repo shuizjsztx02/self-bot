@@ -24,13 +24,14 @@ import uuid
 import logging
 
 from app.langchain.llm import get_llm
-from app.langchain.tools import get_all_tools, get_all_tools_with_mcp
+from app.langchain.tools import get_all_tools, get_tools_for_query
 from app.langchain.memory import ShortTermMemory, LongTermMemory, MemorySummarizer
 from app.langchain.prompts import PromptLoader, VariableInjector, PromptContext
 from app.callbacks import AgentCallbackHandler, ExecutionTracer
 from app.config import settings
-from app.skills import SkillManager, DANGEROUS_TOOLS
+from app.skills import DANGEROUS_TOOLS
 from app.skills.tracer import get_skill_tracer, skill_trace_step
+from app.core.managers import get_skill_manager
 from app.langchain.services.stream_interrupt import (
     StreamInterruptManager,
     StreamInterruptedException,
@@ -55,6 +56,11 @@ class ChatServiceConfig:
     max_context_tokens: int = 4000
     enable_skills: bool = True
     enable_long_term_memory: bool = True
+    # ClawHub 自动搜索与安装
+    clawhub_auto_search: bool = field(default_factory=lambda: settings.CLAWHUB_AUTO_SEARCH)
+    clawhub_auto_install: bool = field(default_factory=lambda: settings.CLAWHUB_AUTO_INSTALL)
+    clawhub_min_confidence: float = field(default_factory=lambda: settings.CLAWHUB_MIN_CONFIDENCE)
+    clawhub_search_limit: int = field(default_factory=lambda: settings.CLAWHUB_SEARCH_LIMIT)
 
 
 @dataclass
@@ -103,6 +109,7 @@ class ChatService:
         config: Optional[ChatServiceConfig] = None,
         short_term_memory: Optional[ShortTermMemory] = None,
         db_session: Optional[Any] = None,
+        selected_tools: Optional[List[str]] = None,
     ):
         self.conversation_id = conversation_id
         self.user_id = user_id
@@ -117,6 +124,9 @@ class ChatService:
         self._llm: Optional[ChatOpenAI] = None
         self._tools: Optional[list] = None
         self._tools_by_name: Optional[dict] = None
+        
+        self._selected_tool_names = selected_tools
+        self._tools_preselected = selected_tools is not None
         
         self.summarizer = MemorySummarizer(provider=provider, model=model)
         
@@ -141,7 +151,7 @@ class ChatService:
         )
         
         self.prompt_loader = PromptLoader(
-            prompts_dir=str(Path(__file__).parent.parent.parent.parent / "prompts"),
+            prompts_dir=str(Path(__file__).parent.parent.parent.parent.parent / "prompts"),
             enable_hot_reload=True,
         )
         
@@ -154,15 +164,13 @@ class ChatService:
         self._callback_handler: Optional[AgentCallbackHandler] = None
         self._tracer: Optional[ExecutionTracer] = None
         self._messages: List = []
+        self._pending_skill_install: Optional[Dict[str, Any]] = None
         
         if self.config.enable_skills:
-            base_path = Path(__file__).parent.parent.parent.parent
-            skills_dirs = [
-                str(base_path / "skills"),
-                str(base_path / "skills_data"),
-            ]
-            
-            self.skill_manager = SkillManager(skills_dir=skills_dirs)
+            # 使用全局单例（core.managers 负责创建和管理），确保所有组件共享同一实例
+            self.skill_manager = get_skill_manager()
+            logger.debug("[ChatService] 使用全局 SkillManager 单例")
+
             self._active_skill = None
             self._skills_initialized = False
         else:
@@ -182,16 +190,49 @@ class ChatService:
             self._tools = get_all_tools()
         return self._tools
     
-    async def _get_tools_with_mcp(self) -> list:
-        if self._tools is None:
-            self._tools = await get_all_tools_with_mcp()
+    async def _get_tools(self, query: str = "") -> list:
+        """
+        获取工具列表（支持预选和动态选择两种模式）
+
+        - 预选模式：直接从 Registry 按名称加载（来自 LangGraph state）
+        - 动态选择模式：通过 ToolSelector 按 query 关键词过滤后按需加载
+        """
+        if self._tools is not None:
+            return self._tools
+
+        if self._tools_preselected and self._selected_tool_names:
+            from app.langchain.tools.registry import get_registry
+            self._tools = await get_registry().get_tools_async(
+                names=self._selected_tool_names
+            )
+            logger.info(
+                f"[ChatService] Loaded {len(self._tools)} pre-selected tools "
+                f"(requested: {len(self._selected_tool_names)})"
+            )
+        else:
+            self._tools = await get_tools_for_query(query)
+            logger.info(f"[ChatService] Loaded {len(self._tools)} tools via selector")
+
         return self._tools
+    
+    def set_selected_tools(self, tool_names: List[str]) -> None:
+        """动态设置预选工具"""
+        self._selected_tool_names = tool_names
+        self._tools_preselected = True
+        self._tools = None
+        self._tools_by_name = None
     
     def set_extra_tools(self, tools: list):
         if self._tools is None:
             self._tools = get_all_tools()
         self._tools.extend(tools)
         self._tools_by_name = None
+
+    # ------------------------------------------------------------------
+    # 兼容别名：旧代码可能仍调用 _get_tools_with_mcp
+    # ------------------------------------------------------------------
+    async def _get_tools_with_mcp(self, query: str = "") -> list:
+        return await self._get_tools(query)
     
     @property
     def tools_by_name(self) -> dict:
@@ -268,6 +309,9 @@ class ChatService:
         if self.custom_system_prompt:
             return self.custom_system_prompt
         
+        # 确保工具已正确加载
+        await self._get_tools(user_message)
+        
         if not self._skills_initialized and self.skill_manager:
             await self.skill_manager.initialize()
             self.skill_manager.set_llm(self.llm)
@@ -298,8 +342,9 @@ class ChatService:
         else:
             self.injector.register_static("short_term_summary", "暂无对话摘要")
         
-        tools_desc = self._format_tools_description()
-        self.injector.register_static("available_tools", tools_desc)
+        # 工具描述通过 Function Calling (bind_tools) 传递给 LLM，无需再注入 System Prompt
+        tool_count = len(self._tools) if self._tools else 0
+        self.injector.register_static("available_tools", f"[{tool_count} 个工具已通过 Function Calling 注入]")
         
         if self.conversation_id:
             self.prompt_context.set_conversation_id(self.conversation_id)
@@ -314,36 +359,60 @@ class ChatService:
             with skill_trace_step("skill_matching", {
                 "user_message": user_message[:100] + "..." if len(user_message) > 100 else user_message,
                 "tools_count": len(self.tools),
+                "clawhub_auto_search": self.config.clawhub_auto_search,
             }):
-                match_result = await self.skill_manager.match_request(
-                    user_message,
-                    [tool.name for tool in self.tools],
-                )
-            
+                # 安全地提取工具名称（防止工具列表包含非Tool对象）
+                available_tool_names = []
+                for tool in self.tools:
+                    if hasattr(tool, 'name'):
+                        available_tool_names.append(tool.name)
+                    else:
+                        logger.warning(f"[ChatService] Tool 对象缺少 name 属性: {type(tool)}")
+
+                # 优先使用带 ClawHub 降级的匹配（本地无匹配时自动搜索安装）
+                if self.config.clawhub_auto_search:
+                    match_result = await self.skill_manager.match_request_with_clawhub_fallback(
+                        query=user_message,
+                        available_tools=available_tool_names,
+                        auto_install=self.config.clawhub_auto_install,
+                        min_confidence=self.config.clawhub_min_confidence,
+                        search_limit=self.config.clawhub_search_limit,
+                    )
+                else:
+                    match_result = await self.skill_manager.match_request(
+                        user_message,
+                        available_tool_names,
+                    )
+
             if match_result.is_skill_match and match_result.skill:
+                # 检查是否有未满足的依赖
+                if match_result.pending_dependencies and not match_result.pending_dependencies.satisfied:
+                    self._pending_skill_install = {
+                        "skill": match_result.skill,
+                        "dependencies": match_result.pending_dependencies,
+                    }
+                    logger.info(
+                        f"[ChatService] 技能 {match_result.skill.meta.name} 有未满足依赖，"
+                        f"暂不注入提示词: {match_result.pending_dependencies.summary()}"
+                    )
+                    self._active_skill = None
+                    return base_prompt
+
                 self._active_skill = match_result.skill
-                
+
                 get_skill_tracer().trace("skill_activated", "service", {
                     "skill_name": match_result.skill.meta.name,
                     "confidence": match_result.confidence,
                     "reasoning": match_result.reasoning,
+                    "via_clawhub": "[ClawHub" in match_result.reasoning,
                 })
-                
+
                 skill_prompt = self.skill_manager.build_skill_prompt([match_result.skill])
-                
                 final_prompt = f"{base_prompt}\n\n{skill_prompt}"
-                
                 return final_prompt
-        
+
         self._active_skill = None
-        
         return base_prompt
-    
-    def _format_tools_description(self) -> str:
-        lines = []
-        for tool in self.tools:
-            lines.append(f"- {tool.name}: {tool.description[:100]}...")
-        return "\n".join(lines)
     
     def _get_default_system_prompt(self) -> str:
         return f"""你是{self.agent_name}，一个智能助手。
@@ -449,26 +518,26 @@ class ChatService:
         ctx = start_chat_trace(self.conversation_id or "default")
         
         try:
-            with trace_step("load_mcp_tools", {"message_len": len(message)}):
-                await self._get_tools_with_mcp()
-            
+            with trace_step("load_tools", {"message_len": len(message)}):
+                await self._get_tools(message)
+
             with trace_step("build_system_prompt", {"conversation_id": self.conversation_id}):
                 system_prompt = await self._build_system_prompt(message)
-            
+
             with trace_step("build_context", {"history_turns": len(self._get_chat_history())}):
                 self._messages = [SystemMessage(content=system_prompt)]
-                
+
                 if history_messages:
                     self._messages.extend(history_messages)
                 else:
                     self._messages.extend(self._get_chat_history())
-                
+
                 self._messages.append(HumanMessage(content=message))
-            
+
             llm_with_tools = self.llm.bind_tools(self.tools)
-            
+
             all_tool_calls = []
-            
+
             self._tracer.step("chat_execution")
             
             for iteration in range(max_iterations):
@@ -559,14 +628,37 @@ class ChatService:
         logger.info(f"[ChatService] chat_stream start: message_len={len(message)}, session_id={session_id}")
         
         try:
-            with trace_step("load_mcp_tools", {"message_len": len(message)}):
-                await self._get_tools_with_mcp()
+            with trace_step("load_tools", {"message_len": len(message)}):
+                await self._get_tools(message)
             logger.info(f"[ChatService] Loaded {len(self.tools)} tools")
             
             with trace_step("build_system_prompt", {"conversation_id": self.conversation_id}):
+                self._pending_skill_install = None
                 system_prompt = await self._build_system_prompt(message)
             logger.info(f"[ChatService] System prompt built: len={len(system_prompt)}")
-            
+
+            # 如果有待确认的技能依赖，发送确认事件给前端，然后停止（不调用 LLM）
+            if self._pending_skill_install:
+                skill = self._pending_skill_install["skill"]
+                dep_check = self._pending_skill_install["dependencies"]
+                yield {
+                    "type": "skill_dependency_confirm",
+                    "skill_name": skill.meta.name,
+                    "skill_slug": getattr(skill, '_clawhub_slug', '') or skill.meta.name.lower().replace(' ', '-'),
+                    "missing": dep_check.to_dict(),
+                    "message": (
+                        f"技能 '{skill.meta.name}' 需要安装以下依赖才能正常使用，"
+                        f"是否继续？\n{dep_check.summary()}"
+                    ),
+                }
+                self._tracer.step("pending_skill_dependency")
+                end_chat_trace(output="waiting_for_skill_dependency_confirm")
+                yield {
+                    "type": "done",
+                    "content": "",
+                }
+                return
+
             with trace_step("build_context", {"history_turns": len(self._get_chat_history())}):
                 self._messages = [SystemMessage(content=system_prompt)]
                 

@@ -37,7 +37,19 @@ class GlobalManagers:
     def skill_manager(self):
         if self._skill_manager is None:
             from app.skills import SkillManager
-            self._skill_manager = SkillManager()
+            from app.config import settings
+            from pathlib import Path
+
+            base_path = Path(__file__).parent.parent
+            skills_dirs = [
+                str(base_path / "skills"),
+                str(base_path / "skills_data"),
+            ]
+            self._skill_manager = SkillManager(
+                skills_dir=skills_dirs,
+                clawhub_install_dir=settings.CLAWHUB_INSTALL_DIR,
+                clawhub_mock_mode=settings.CLAWHUB_USE_MOCK,
+            )
         return self._skill_manager
     
     @property
@@ -75,6 +87,16 @@ def get_global_managers() -> GlobalManagers:
 def get_skill_manager():
     """获取全局 Skill 管理器"""
     return get_global_managers().skill_manager
+
+
+def set_skill_manager(manager) -> None:
+    """
+    覆盖全局 Skill 管理器实例（主要用于测试 / 热重载场景）
+
+    Args:
+        manager: SkillManager 实例，传 None 可重置为下次懒加载新建
+    """
+    get_global_managers()._skill_manager = manager
 
 
 def get_state_manager():

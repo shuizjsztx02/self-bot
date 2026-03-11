@@ -18,6 +18,7 @@ from app.langchain.graph.nodes import (
     web_search_node,
     parallel_search_node,
     generate_response_node,
+    generate_response_stream_node,
     finalize_node,
 )
 
@@ -54,7 +55,7 @@ def build_base_graph(checkpointer: Optional[AsyncSqliteSaver] = None) -> StateGr
     graph = StateGraph(SupervisorState)
     
     graph.add_node("classify_intent", classify_intent_node)
-    graph.add_node("generate_response", generate_response_node)
+    graph.add_node("generate_response", generate_response_stream_node)
     graph.add_node("finalize", finalize_node)
     
     graph.set_entry_point("classify_intent")
@@ -83,7 +84,7 @@ def build_supervisor_graph(checkpointer: Optional[AsyncSqliteSaver] = None) -> S
     graph.add_node("rag_retrieve", rag_retrieve_node)
     graph.add_node("web_search", web_search_node)
     graph.add_node("parallel_search", parallel_search_node)
-    graph.add_node("generate_response", generate_response_node)
+    graph.add_node("generate_response", generate_response_stream_node)
     graph.add_node("finalize", finalize_node)
     
     graph.set_entry_point("classify_intent")
@@ -130,7 +131,7 @@ def build_simple_graph(checkpointer: Optional[AsyncSqliteSaver] = None) -> State
     graph = StateGraph(SupervisorState)
     
     graph.add_node("classify_intent", classify_intent_node)
-    graph.add_node("generate_response", generate_response_node)
+    graph.add_node("generate_response", generate_response_stream_node)
     
     graph.set_entry_point("classify_intent")
     graph.add_edge("classify_intent", "generate_response")
@@ -316,7 +317,9 @@ class SupervisorGraphRunner:
         
         logger.info(f"[GraphRunner] Starting stream execution: query={query[:50]}..., thread_id={effective_thread_id}, history_count={len(history_messages) if history_messages else 0}, has_shared_memory={shared_memory is not None}")
         
-        async for event in self._graph.astream(initial_state, config=config):
+        async for event in self._graph.astream(
+            initial_state, config=config, stream_mode="updates"
+        ):
             yield event
     
     async def get_state(

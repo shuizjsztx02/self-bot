@@ -16,50 +16,30 @@ logger = logging.getLogger(__name__)
 
 
 def get_all_tools() -> List[StructuredTool]:
-    """
-    获取所有工具
-    
-    Returns:
-        工具列表
-    """
+    """从 Registry 获取所有已加载的本地工具（同步）"""
     try:
-        from app.langchain.tools import get_tools
-        return get_tools()
+        from app.langchain.tools import get_all_tools as _get_all_tools
+        return _get_all_tools()
     except ImportError:
         logger.warning("[ToolNode] Could not import tools from app.langchain.tools")
         return []
 
 
-def get_mcp_tools() -> List[StructuredTool]:
-    """
-    获取 MCP 工具
-    
-    Returns:
-        MCP 工具列表
-    """
-    try:
-        from app.mcp import get_mcp_tools
-        return get_mcp_tools()
-    except ImportError:
-        logger.warning("[ToolNode] Could not import MCP tools")
-        return []
-
-
-def create_tool_node() -> ToolNode:
+def create_tool_node(tools: Optional[List[StructuredTool]] = None) -> ToolNode:
     """
     创建工具节点
-    
+
+    Args:
+        tools: 预加载的工具列表；为 None 时只使用 Registry 中已加载的本地工具
+
     Returns:
         ToolNode 实例
     """
-    tools = get_all_tools()
-    mcp_tools = get_mcp_tools()
-    
-    all_tools = tools + mcp_tools
-    
-    logger.info(f"[ToolNode] Created with {len(all_tools)} tools")
-    
-    return ToolNode(all_tools)
+    if tools is None:
+        tools = get_all_tools()
+
+    logger.info(f"[ToolNode] Created with {len(tools)} tools")
+    return ToolNode(tools)
 
 
 async def execute_tools_node(state: SupervisorState) -> Dict[str, Any]:
@@ -173,12 +153,10 @@ class ToolExecutor:
         self._load_tools()
     
     def _load_tools(self):
-        """加载所有工具"""
-        tools = get_all_tools() + get_mcp_tools()
-        for tool in tools:
+        """从 Registry 加载所有已注册的本地工具"""
+        for tool in get_all_tools():
             name = tool.name if hasattr(tool, 'name') else str(tool)
             self._tools[name] = tool
-        
         logger.info(f"[ToolExecutor] Loaded {len(self._tools)} tools")
     
     def get_tool(self, name: str) -> Optional[StructuredTool]:

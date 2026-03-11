@@ -106,6 +106,26 @@ class Settings(BaseSettings):
     LANGGRAPH_CHECKPOINT_DB_PATH: str = "./data/database/checkpoint.db"
     LANGGRAPH_CHECKPOINT_TTL_HOURS: int = 24
     LANGGRAPH_CHECKPOINT_MAX_HISTORY: int = 100
+    
+    TOOL_SELECTION_MAX_TOOLS: int = 50
+
+    # MCP 服务器配置（config-driven，initializer 从此处读取）
+    MCP_SERVERS: dict = {
+        "word":   {"category": "office_word",  "tags": ["office", "word", "document"]},
+        "excel":  {"category": "office_excel", "tags": ["office", "excel", "spreadsheet"]},
+        "pptx":   {"category": "office_pptx", "tags": ["office", "pptx", "presentation"]},
+        "notion": {"category": "notion",       "tags": ["notion", "notes"]},
+        "feishu": {"category": "feishu",       "tags": ["feishu", "collaboration"]},
+    }
+
+    # ClawHub 集成配置
+    CLAWHUB_AUTO_SEARCH: bool = True        # 本地技能匹配失败时自动搜索 ClawHub
+    CLAWHUB_AUTO_INSTALL: bool = True       # 搜索到合适技能时自动安装
+    CLAWHUB_SEARCH_LIMIT: int = 3           # 每次搜索返回的最大结果数
+    CLAWHUB_MIN_CONFIDENCE: float = 0.6     # 自动安装的最低置信度阈值
+    CLAWHUB_INSTALL_DIR: str = "./skills/installed"
+    CLAWHUB_USE_MOCK: bool = False          # 使用真实 ClawHub CLI（支持速率限制重试）
+    CLAWHUB_TIMEOUT: int = 60               # CLI 命令超时（秒）
 
     class Config:
         env_file = ".env"

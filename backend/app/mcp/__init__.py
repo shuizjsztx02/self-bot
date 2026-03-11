@@ -7,6 +7,7 @@ from .client import (
     get_pptx_mcp_tools,
     get_notion_mcp_tools,
     get_all_mcp_tools,
+    get_mcp_tools,
 )
 from .feishu_client import (
     start_feishu_mcp_session,
@@ -24,6 +25,7 @@ __all__ = [
     "get_pptx_mcp_tools",
     "get_notion_mcp_tools",
     "get_all_mcp_tools",
+    "get_mcp_tools",
     "start_feishu_mcp_session",
     "stop_feishu_mcp_session",
     "get_feishu_mcp_tools",

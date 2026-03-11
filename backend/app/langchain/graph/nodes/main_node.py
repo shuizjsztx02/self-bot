@@ -8,7 +8,11 @@ import time
 import logging
 from typing import Dict, Any, Optional, AsyncIterator, List
 
-from app.langchain.graph.state import SupervisorState, StateAdapter, get_db_session, get_shared_memory
+from app.langchain.graph.state import (
+    SupervisorState, StateAdapter,
+    get_db_session, get_shared_memory,
+    get_side_channel,
+)
 from app.langchain.graph.adapters.main_adapter import MainAgentAdapter
 
 logger = logging.getLogger(__name__)
@@ -65,8 +69,11 @@ async def generate_response_node(state: SupervisorState) -> Dict[str, Any]:
     conversation_id = state.get("conversation_id")
     db_session = get_db_session()
     shared_memory = get_shared_memory()
+    selected_tools = state.get("selected_tools")
     
     logger.info(f"[MainNode] Generating response for: {query[:50]}...")
+    if selected_tools:
+        logger.info(f"[MainNode] Using {len(selected_tools)} pre-selected tools")
     logger.info(f"[MainNode] Has shared_memory: {shared_memory is not None}")
     
     try:
@@ -76,6 +83,7 @@ async def generate_response_node(state: SupervisorState) -> Dict[str, Any]:
             conversation_id=conversation_id,
             user_name=user_id or "用户",
             short_term_memory=shared_memory,
+            selected_tools=selected_tools,
         )
         
         history_messages = _extract_history_from_state(state)
@@ -126,14 +134,13 @@ async def generate_response_stream_node(
 ) -> AsyncIterator[Dict[str, Any]]:
     """
     流式响应生成节点
-    
-    使用 ChatService 生成流式响应
-    
-    Args:
-        state: 当前状态
-        
+
+    使用 ChatService.chat_stream() 生成流式响应。
+    特殊事件（如 skill_dependency_confirm）通过 ContextVar 旁路通道传递，
+    绕过 LangGraph 状态机限制。
+
     Yields:
-        响应片段
+        仅包含 SupervisorState 兼容字段的状态更新
     """
     start_time = time.time()
     query = state.get("query", "")
@@ -141,55 +148,75 @@ async def generate_response_stream_node(
     conversation_id = state.get("conversation_id")
     db_session = get_db_session()
     shared_memory = get_shared_memory()
-    
+    selected_tools = state.get("selected_tools")
+
     logger.info(f"[MainStreamNode] Streaming response for: {query[:50]}...")
-    logger.info(f"[MainStreamNode] Has shared_memory: {shared_memory is not None}")
-    
+    if selected_tools:
+        logger.info(f"[MainStreamNode] Using {len(selected_tools)} pre-selected tools")
+
     try:
         from app.langchain.services.chat import ChatService
-        
+
         service = ChatService(
             conversation_id=conversation_id,
             user_name=user_id or "用户",
             short_term_memory=shared_memory,
+            selected_tools=selected_tools,
         )
-        
+
         history_messages = _extract_history_from_state(state)
-        logger.info(f"[MainStreamNode] Extracted {len(history_messages)} history messages from state")
-        
         enhanced_query = MainAgentAdapter.build_enhanced_query(state)
-        
+
         full_response = ""
         async for chunk in service.chat_stream(enhanced_query, db=db_session, history_messages=history_messages):
-            if isinstance(chunk, dict):
-                if chunk.get("type") == "content":
-                    content = chunk.get("content", "")
-                    full_response += content
-                    yield {"stream_chunk": content, "final_response": full_response}
-            elif isinstance(chunk, str):
-                full_response += chunk
-                yield {"stream_chunk": chunk, "final_response": full_response}
-        
+            if not isinstance(chunk, dict):
+                full_response += str(chunk)
+                yield {"final_response": full_response}
+                continue
+
+            chunk_type = chunk.get("type", "")
+
+            if chunk_type == "content":
+                content = chunk.get("content", "")
+                full_response += content
+                yield {"final_response": full_response}
+
+            elif chunk_type == "skill_dependency_confirm":
+                bus = get_side_channel()
+                if bus:
+                    logger.info(f"[MainStreamNode] 技能依赖确认事件 → SideChannel: {chunk.get('skill_name')}")
+                    bus.push(chunk)
+                else:
+                    logger.warning("[MainStreamNode] SideChannel 未初始化，skill_dependency_confirm 事件丢失")
+                # 立即 yield 一次状态更新，触发 LangGraphService 的 SideChannel pop
+                yield {"final_response": full_response}
+
+            elif chunk_type in ("tool_call", "tool_result"):
+                logger.debug(f"[MainStreamNode] {chunk_type}: {chunk.get('name', '')}")
+
+            elif chunk_type in ("done", "interrupted", "error"):
+                logger.info(f"[MainStreamNode] 流结束: {chunk_type}")
+
         duration_ms = (time.time() - start_time) * 1000
-        
+
         state = StateAdapter.record_node_execution(
             state,
             node_name="generate_response_stream",
             success=True,
             duration_ms=duration_ms,
         )
-        
+
         yield {
             "final_response": full_response,
             "node_executions": state.get("node_executions", []),
         }
-        
-        logger.info(f"[MainStreamNode] Stream completed (duration={duration_ms:.1f}ms)")
-        
+
+        logger.info(f"[MainStreamNode] Stream completed (duration={duration_ms:.1f}ms, len={len(full_response)})")
+
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
-        logger.error(f"[MainStreamNode] Error: {e}")
-        
+        logger.error(f"[MainStreamNode] Error: {e}", exc_info=True)
+
         state = StateAdapter.record_node_execution(
             state,
             node_name="generate_response_stream",
@@ -197,7 +224,7 @@ async def generate_response_stream_node(
             duration_ms=duration_ms,
             error=str(e),
         )
-        
+
         yield {
             "final_response": "",
             "error": str(e),

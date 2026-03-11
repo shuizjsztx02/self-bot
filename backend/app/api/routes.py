@@ -22,6 +22,7 @@ from .schemas import (
     SkillCreateRequest,
     MemoryCreateRequest,
     MemorySearchRequest,
+    SkillInstallConfirmRequest,
 )
 
 router = APIRouter(tags=["chat"])
@@ -154,16 +155,18 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             yield f"data: {json.dumps(conv_data, ensure_ascii=False)}\n\n"
             
             async for chunk in agent.chat_stream(request.message, db=db):
-                if chunk.get("type") == "content":
+                chunk_type = chunk.get("type", "")
+                if chunk_type in ("content", "chunk"):
                     full_response += chunk.get("content", "")
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             
-            assistant_message = Message(
-                conversation_id=conversation.id,
-                role="assistant",
-                content=full_response,
-            )
-            db.add(assistant_message)
+            if full_response:
+                assistant_message = Message(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=full_response,
+                )
+                db.add(assistant_message)
             
             conversation.updated_at = datetime.now(timezone.utc)
             if is_new_conversation and request.message:
@@ -532,6 +535,184 @@ async def search_memory(
 async def get_memory_stats():
     stats = agent_manager.get_stats()
     return stats
+
+
+@router.post("/skills/confirm-install")
+async def confirm_skill_install(request: SkillInstallConfirmRequest):
+    """
+    用户确认安装技能依赖后，执行自动安装。
+    返回 SSE 流推送安装进度（实时）。
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    import json
+    import os
+    from pathlib import Path as _Path
+
+    def _sse(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def _persist_env_vars(env_vars: dict):
+        """将用户提供的环境变量同时写入 .env 文件持久化"""
+        env_file = _Path("backend/.env")
+        if not env_file.parent.exists():
+            env_file = _Path(".env")
+
+        existing = {}
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    existing[k.strip()] = v.strip()
+
+        for key, value in env_vars.items():
+            os.environ[key] = value
+            existing[key] = value
+
+        lines = [f"{k}={v}" for k, v in existing.items()]
+        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    async def install_stream():
+        try:
+            from app.core.managers import get_skill_manager
+            from app.skills.dependency_resolver import DependencyResolver
+            from app.skills.dependency_installer import DependencyInstaller
+
+            skill_manager = get_skill_manager()
+            if not skill_manager:
+                yield _sse({"type": "error", "error": "SkillManager not initialized"})
+                return
+
+            if request.env_vars:
+                _persist_env_vars(request.env_vars)
+                yield _sse({
+                    "type": "skill_install_progress",
+                    "step": "env",
+                    "detail": f"已配置 {len(request.env_vars)} 个环境变量并写入 .env",
+                    "progress": 0.05,
+                })
+
+            skill = skill_manager.get_skill_by_slug(request.skill_slug)
+            if not skill:
+                try:
+                    loaded = await skill_manager.install_skill_from_clawhub(
+                        request.skill_slug, activate=False
+                    )
+                    if loaded:
+                        skill = loaded
+                except Exception:
+                    pass
+            if not skill:
+                yield _sse({"type": "error", "error": f"Skill not found: {request.skill_slug}"})
+                return
+
+            yield _sse({
+                "type": "skill_install_progress",
+                "step": "check",
+                "detail": f"正在检测 {skill.meta.name} 的依赖...",
+                "progress": 0.1,
+            })
+
+            resolver = DependencyResolver()
+            check = await resolver.check(skill)
+
+            if check.satisfied:
+                skill_manager.activate_skill(skill.meta.name)
+                yield _sse({
+                    "type": "skill_ready",
+                    "skill_name": skill.meta.name,
+                    "skill_slug": request.skill_slug,
+                    "message": "所有依赖已满足，技能已激活！可以重新发送您的请求。",
+                })
+                return
+
+            if not request.install_pip:
+                check.missing_pip = []
+            if not request.install_npm:
+                check.missing_npm = []
+            if not request.install_mcp:
+                check.missing_mcp_servers = []
+            if not request.install_bins:
+                check.missing_bins = []
+
+            installer = DependencyInstaller()
+
+            # 使用 asyncio.Queue 实现实时进度推送
+            progress_queue: asyncio.Queue = asyncio.Queue()
+            _SENTINEL = object()
+
+            async def progress_cb(step: str, detail: str, progress: float):
+                await progress_queue.put({
+                    "type": "skill_install_progress",
+                    "step": step,
+                    "detail": detail,
+                    "progress": min(0.1 + progress * 0.85, 0.95),
+                })
+
+            async def _run_install():
+                try:
+                    result = await installer.install_all(
+                        check, progress_callback=progress_cb, skill=skill
+                    )
+                    await progress_queue.put({"_result": result})
+                except Exception as exc:
+                    await progress_queue.put({"_error": str(exc)})
+                finally:
+                    await progress_queue.put(_SENTINEL)
+
+            asyncio.create_task(_run_install())
+
+            install_result = None
+            install_error = None
+
+            while True:
+                item = await progress_queue.get()
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, dict):
+                    if "_result" in item:
+                        install_result = item["_result"]
+                        continue
+                    if "_error" in item:
+                        install_error = item["_error"]
+                        continue
+                    yield _sse(item)
+
+            if install_error:
+                yield _sse({
+                    "type": "skill_install_failed",
+                    "skill_name": skill.meta.name,
+                    "message": f"安装异常: {install_error}",
+                })
+            elif install_result and install_result.success:
+                skill_manager.activate_skill(skill.meta.name)
+                yield _sse({
+                    "type": "skill_ready",
+                    "skill_name": skill.meta.name,
+                    "skill_slug": request.skill_slug,
+                    "message": "所有依赖已安装完成，技能已激活！请重新发送您的请求以使用该技能。",
+                    "details": install_result.to_dict(),
+                })
+            elif install_result:
+                yield _sse({
+                    "type": "skill_install_failed",
+                    "skill_name": skill.meta.name,
+                    "message": f"部分依赖安装失败: {', '.join(install_result.errors)}",
+                    "details": install_result.to_dict(),
+                })
+            else:
+                yield _sse({
+                    "type": "skill_install_failed",
+                    "skill_name": skill.meta.name,
+                    "message": "安装过程未返回结果",
+                })
+
+        except Exception as e:
+            logger.error(f"[API] confirm-install error: {e}")
+            yield _sse({"type": "error", "error": str(e)})
+
+    return StreamingResponse(install_stream(), media_type="text/event-stream")
 
 
 # ==================== 自进化系统API端点 ====================

@@ -19,6 +19,31 @@ _context_shared_memory: ContextVar[Optional[Any]] = ContextVar("shared_memory", 
 _context_long_term_memory: ContextVar[Optional[Any]] = ContextVar("long_term_memory", default=None)
 
 
+class SideChannel:
+    """
+    旁路通道：在 LangGraph 节点与外部调用方之间传递事件。
+
+    LangGraph 的 copy_context() 只复制 ContextVar 引用，
+    不深拷贝对象本身，所以节点内对可变对象的修改对调用方可见。
+    """
+    def __init__(self):
+        self.events: List[Dict[str, Any]] = []
+
+    def push(self, event: Dict[str, Any]):
+        self.events.append(event)
+
+    def pop_all(self) -> List[Dict[str, Any]]:
+        result = self.events.copy()
+        self.events.clear()
+        return result
+
+    def has_events(self) -> bool:
+        return len(self.events) > 0
+
+
+_context_side_channel: ContextVar[Optional[SideChannel]] = ContextVar("side_channel", default=None)
+
+
 def set_db_session(db_session: Optional[Any]) -> None:
     """设置当前上下文的数据库会话"""
     _context_db_session.set(db_session)
@@ -47,6 +72,18 @@ def set_long_term_memory(long_term_memory: Optional[Any]) -> None:
 def get_long_term_memory() -> Optional[Any]:
     """获取当前上下文的长期记忆"""
     return _context_long_term_memory.get()
+
+
+def create_side_channel() -> SideChannel:
+    """创建并注册旁路通道（在 astream 调用前使用）"""
+    ch = SideChannel()
+    _context_side_channel.set(ch)
+    return ch
+
+
+def get_side_channel() -> Optional[SideChannel]:
+    """获取当前上下文的旁路通道"""
+    return _context_side_channel.get()
 
 
 class QueryIntent(str, Enum):
@@ -178,6 +215,10 @@ class SupervisorState(TypedDict, total=False):
     
     final_response: Optional[str]
     tool_calls: Optional[List[Dict[str, Any]]]
+    
+    selected_tools: Optional[List[str]]
+    tool_categories: Optional[List[str]]
+    tool_selection_reasoning: Optional[str]
     
     route: Optional[str]
     route_confidence: Optional[float]
@@ -385,6 +426,7 @@ def create_initial_state(
     history_messages: Optional[List[Any]] = None,
     shared_memory: Optional[Any] = None,
     long_term_memory: Optional[Any] = None,
+    selected_tools: Optional[List[str]] = None,
 ) -> SupervisorState:
     """
     创建初始状态
@@ -438,6 +480,9 @@ def create_initial_state(
         search_iterations=None,
         final_response=None,
         tool_calls=None,
+        selected_tools=selected_tools,
+        tool_categories=None,
+        tool_selection_reasoning=None,
         route=None,
         route_confidence=None,
         parallel_results=None,
