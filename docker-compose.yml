@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: self-bot-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DATABASE_URL=sqlite+aiosqlite:///./data/database/selfbot.db
+    volumes:
+      - backend-data:/app/data
+      - backend-workspace:/app/workspace
+      - backend-models:/app/model_hub
+      - ./backend/skills:/app/skills
+    networks:
+      - self-bot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: self-bot-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - self-bot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  backend-data:
+    name: self-bot-data
+  backend-workspace:
+    name: self-bot-workspace
+  backend-models:
+    name: self-bot-models
+
+networks:
+  self-bot-network:
+    name: self-bot-network
+    driver: bridge

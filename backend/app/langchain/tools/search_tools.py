@@ -1,7 +1,7 @@
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from app.config import settings
-import httpx
+from app.core.http_client import http_get, http_post
 import json
 
 
@@ -27,21 +27,17 @@ async def tavily_search(query: str, max_results: int = 5) -> str:
         return "错误: TAVILY_API_KEY 未配置"
     
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                "https://api.tavily.com/search",
-                headers={
-                    "Authorization": f"Bearer {settings.TAVILY_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "query": query,
-                    "max_results": max_results,
-                    "include_answer": True,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        # 使用全局HTTP连接池
+        response = await http_post(
+            "https://api.tavily.com/search",
+            client_name="tavily",  # 使用Tavily专用客户端
+            json={
+                "query": query,
+                "max_results": max_results,
+                "include_answer": True,
+            },
+        )
+        data = response.json()
         
         results = []
         if data.get("answer"):
@@ -65,18 +61,17 @@ async def tavily_search(query: str, max_results: int = 5) -> str:
 async def duckduckgo_search(query: str, max_results: int = 5) -> str:
     """使用DuckDuckGo搜索引擎搜索信息，免费无需API密钥"""
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(
-                "https://api.duckduckgo.com/",
-                params={
-                    "q": query,
-                    "format": "json",
-                    "no_html": 1,
-                    "skip_disambig": 1,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        # 使用全局HTTP连接池
+        response = await http_get(
+            "https://api.duckduckgo.com/",
+            params={
+                "q": query,
+                "format": "json",
+                "no_html": 1,
+                "skip_disambig": 1,
+            },
+        )
+        data = response.json()
         
         results = []
         if data.get("AbstractText"):
@@ -106,19 +101,18 @@ async def serpapi_search(query: str, num: int = 10) -> str:
         return "错误: SERPAPI_API_KEY 未配置"
     
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(
-                "https://serpapi.com/search",
-                params={
-                    "api_key": settings.SERPAPI_API_KEY,
-                    "q": query,
-                    "num": num,
-                    "hl": "zh-cn",
-                    "gl": "cn",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        # 使用全局HTTP连接池
+        response = await http_get(
+            "https://serpapi.com/search",
+            params={
+                "api_key": settings.SERPAPI_API_KEY,
+                "q": query,
+                "num": num,
+                "hl": "zh-cn",
+                "gl": "cn",
+            },
+        )
+        data = response.json()
         
         results = []
         

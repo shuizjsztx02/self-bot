@@ -15,7 +15,7 @@ interface ChatState {
   abortController: { abort: () => void } | null
   pendingSkillInstall: PendingSkillInstall | null
   skillInstallProgress: { step: string; detail: string; progress: number } | null
-
+  isViewingHistory: boolean
   loadSettings: () => Promise<void>
   loadConversations: () => Promise<void>
   loadConversation: (id: string) => Promise<void>
@@ -41,6 +41,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   abortController: null,
   pendingSkillInstall: null,
   skillInstallProgress: null,
+  isViewingHistory: false,
 
   loadSettings: async () => {
     try {
@@ -61,7 +62,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   loadConversation: async (id: string) => {
-    set({ isLoading: true })
+    set({ isLoading: true, isViewingHistory: true })
     try {
       const conversation = await chatApi.getConversation(id)
       set({
@@ -81,6 +82,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversations: [conversation, ...state.conversations],
       currentConversation: conversation,
       messages: [],
+      isViewingHistory: false,
     }))
     return conversation
   },

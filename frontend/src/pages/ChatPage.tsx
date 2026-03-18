@@ -17,6 +17,7 @@ export default function ChatPage() {
     skillInstallProgress,
     setPendingSkillInstall,
     setSkillInstallProgress,
+    isViewingHistory,
   } = useChatStore()
 
   useEffect(() => {
@@ -92,6 +93,7 @@ export default function ChatPage() {
           messages={messages}
           isLoading={isLoading}
           streamingContent={isStreaming ? streamingContent : undefined}
+          isViewingHistory={isViewingHistory}
         />
         <ChatInput />
       </div>

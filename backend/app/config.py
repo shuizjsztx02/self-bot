@@ -127,6 +127,32 @@ class Settings(BaseSettings):
     CLAWHUB_USE_MOCK: bool = False          # 使用真实 ClawHub CLI（支持速率限制重试）
     CLAWHUB_TIMEOUT: int = 60               # CLI 命令超时（秒）
 
+    # ==================== HTTP 客户端配置 ====================
+    # 连接池配置
+    HTTP_MAX_CONNECTIONS: int = 100
+    HTTP_MAX_KEEPALIVE_CONNECTIONS: int = 40
+    HTTP_KEEPALIVE_EXPIRY: float = 30.0
+    
+    # 超时配置
+    HTTP_CONNECT_TIMEOUT: float = 5.0
+    HTTP_READ_TIMEOUT: float = 30.0
+    HTTP_WRITE_TIMEOUT: float = 10.0
+    HTTP_POOL_TIMEOUT: float = 5.0
+    
+    # 重试配置
+    HTTP_MAX_RETRIES: int = 3
+    HTTP_RETRY_DELAY: float = 1.0
+    
+    # HTTP/2 支持
+    HTTP_ENABLE_HTTP2: bool = True
+    
+    # 限流配置
+    HTTP_RATE_LIMIT: float = 20.0           # 默认请求速率（请求/秒）
+    HTTP_MAX_CONCURRENT: int = 20           # 默认最大并发数
+    HTTP_ADAPTIVE_RATE_LIMIT: bool = True   # 启用自适应限流
+    HTTP_RATE_LIMIT_MIN: float = 1.0        # 最小速率
+    HTTP_RATE_LIMIT_MAX: float = 50.0       # 最大速率
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

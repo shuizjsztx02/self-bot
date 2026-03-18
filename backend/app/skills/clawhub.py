@@ -21,11 +21,13 @@ import io
 from pathlib import Path
 
 import yaml
+
+# 导入全局HTTP客户端
 try:
-    import httpx
-    _HTTPX_AVAILABLE = True
+    from app.core.http_client import HTTPClientManager, get_http_client
+    _HTTP_CLIENT_AVAILABLE = True
 except ImportError:
-    _HTTPX_AVAILABLE = False
+    _HTTP_CLIENT_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -754,35 +756,36 @@ class ClawHubClient:
         下载 URL: https://wry-manatee-359.convex.site/api/v1/download?slug=<slug>
         返回 ZIP 包，包含 SKILL.md 及其他文件。
         """
-        if not _HTTPX_AVAILABLE:
-            logger.debug("[ClawHub] httpx 未安装，跳过 Convex 下载")
+        if not _HTTP_CLIENT_AVAILABLE:
+            logger.debug("[ClawHub] HTTP客户端未初始化，跳过 Convex 下载")
             return False
 
         url = f"{self.CONVEX_DOWNLOAD_API}?slug={slug}"
         headers = {"User-Agent": "clawhub-selfbot/1.0"}
 
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                logger.info(f"[ClawHub] Convex API 下载: {url}")
-                resp = await client.get(url, headers=headers)
+            # 使用全局HTTP连接池
+            client = await get_http_client()
+            logger.info(f"[ClawHub] Convex API 下载: {url}")
+            resp = await client.get(url, headers=headers)
 
-                if resp.status_code == 404:
-                    logger.info(f"[ClawHub] Convex API: 技能 {slug} 不存在 (404)")
-                    return False
+            if resp.status_code == 404:
+                logger.info(f"[ClawHub] Convex API: 技能 {slug} 不存在 (404)")
+                return False
 
-                if resp.status_code != 200:
-                    logger.warning(
-                        f"[ClawHub] Convex API 返回 {resp.status_code}: "
-                        f"{resp.text[:200]}"
-                    )
-                    return False
+            if resp.status_code != 200:
+                logger.warning(
+                    f"[ClawHub] Convex API 返回 {resp.status_code}: "
+                    f"{resp.text[:200]}"
+                )
+                return False
 
-                content_type = resp.headers.get("content-type", "")
-                if "zip" not in content_type and resp.content[:4] != b"PK\x03\x04":
-                    logger.warning(
-                        f"[ClawHub] Convex API 返回非 ZIP 内容: {content_type}"
-                    )
-                    return False
+            content_type = resp.headers.get("content-type", "")
+            if "zip" not in content_type and resp.content[:4] != b"PK\x03\x04":
+                logger.warning(
+                    f"[ClawHub] Convex API 返回非 ZIP 内容: {content_type}"
+                )
+                return False
 
                 # 解压 ZIP
                 skill_dir = target / slug
@@ -861,29 +864,32 @@ class ClawHubClient:
         headers = {"User-Agent": "clawhub-selfbot/1.0 (self-bot integration)"}
 
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                for url in candidate_urls:
-                    try:
-                        logger.info(f"[ClawHub] HTTP 降级尝试: {url}")
-                        resp = await client.get(url, headers=headers)
-                        if resp.status_code == 200 and resp.text.strip():
-                            content = resp.text
-                            # 写入 SKILL.md
-                            skill_dir = target / slug
-                            skill_dir.mkdir(parents=True, exist_ok=True)
-                            skill_file = skill_dir / "SKILL.md"
-                            skill_file.write_text(content, encoding="utf-8")
-                            logger.info(
-                                f"[ClawHub] HTTP 降级安装成功: {slug} -> {skill_file}"
-                            )
-                            return True
-                        else:
-                            logger.debug(
-                                f"[ClawHub] HTTP {resp.status_code} from {url}"
-                            )
-                    except httpx.RequestError as e:
-                        logger.debug(f"[ClawHub] HTTP 请求失败 {url}: {e}")
-                        continue
+            # 使用全局HTTP连接池
+            client = await get_http_client()
+            
+            for url in candidate_urls:
+                try:
+                    logger.info(f"[ClawHub] HTTP 降级尝试: {url}")
+                    resp = await client.get(url, headers=headers)
+                    
+                    if resp.status_code == 200 and resp.text.strip():
+                        content = resp.text
+                        # 写入 SKILL.md
+                        skill_dir = target / slug
+                        skill_dir.mkdir(parents=True, exist_ok=True)
+                        skill_file = skill_dir / "SKILL.md"
+                        skill_file.write_text(content, encoding="utf-8")
+                        logger.info(
+                            f"[ClawHub] HTTP 降级安装成功: {slug} -> {skill_file}"
+                        )
+                        return True
+                    else:
+                        logger.debug(
+                            f"[ClawHub] HTTP {resp.status_code} from {url}"
+                        )
+                except Exception as e:
+                    logger.debug(f"[ClawHub] HTTP 请求失败 {url}: {e}")
+                    continue
 
         except Exception as e:
             logger.error(f"[ClawHub] HTTP 降级异常: {e}")

@@ -75,6 +75,18 @@ async def lifespan(app: FastAPI):
     log_device_status()
 
     await init_db()
+    
+    # 初始化 HTTP 客户端管理器
+    print("\n" + "=" * 50)
+    print("初始化 HTTP 客户端管理器...")
+    print("=" * 50)
+    try:
+        from app.core.http_client import HTTPClientManager
+        await HTTPClientManager.get_instance()
+        print("✅ HTTP Client Manager initialized")
+    except Exception as e:
+        print(f"⚠️ HTTP 客户端管理器初始化失败: {e}")
+    print("=" * 50 + "\n")
 
     # 初始化工具注册中心（本地工具 + MCP 懒加载器注册）
     print("\n" + "=" * 50)
@@ -122,6 +134,14 @@ async def lifespan(app: FastAPI):
     print("\n" + "=" * 50)
     print("关闭服务...")
     print("=" * 50)
+    
+    # 关闭 HTTP 客户端管理器
+    try:
+        from app.core.http_client import HTTPClientManager
+        await HTTPClientManager.close()
+        print("✅ HTTP Client Manager closed")
+    except Exception as e:
+        print(f"⚠️ HTTP 客户端管理器关闭失败: {e}")
     
     try:
         from app.core.managers import get_global_managers

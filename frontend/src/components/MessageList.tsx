@@ -7,18 +7,31 @@ interface MessageListProps {
   messages: Message[]
   isLoading: boolean
   streamingContent?: string
+  isViewingHistory?: boolean
 }
 
 export default function MessageList({
   messages,
   isLoading,
   streamingContent,
+  isViewingHistory = false,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const initialLoadRef = useRef(true)
+  const previousMessageCountRef = useRef(0)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamingContent])
+    const currentMessageCount = messages.length
+    const isNewMessage = currentMessageCount > previousMessageCountRef.current
+    const shouldAutoScroll = initialLoadRef.current || isNewMessage || streamingContent
+    
+    if (shouldAutoScroll) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+    
+    previousMessageCountRef.current = currentMessageCount
+    initialLoadRef.current = false
+  }, [messages, streamingContent, isViewingHistory])
 
   if (isLoading) {
     return (
